@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut } from 'lucide-react';
+import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut, MessageSquareHeart, Users } from 'lucide-react';
 import { extractTextFromFile, importGoogleDocFromUrl } from './lib/pdf';
 import { AudioStreamPlayer, AudioRecorder } from './lib/audio';
 import { cn } from './lib/utils';
@@ -9,6 +9,11 @@ import { googleSignIn, initAuth, logoutGoogle, setCachedAccessToken } from './li
 import { listDriveFiles, importDriveFile, DriveFile } from './lib/drive';
 import { User } from 'firebase/auth';
 import { AppLogo } from './components/AppLogo';
+import { GoldenRatioIconPreview } from './components/GoldenRatioIconPreview';
+import { GoldenRatioWatermark } from './components/GoldenRatioWatermark';
+import { FeedbackModal } from './components/FeedbackModal';
+import { AdminPanel } from './components/AdminPanel';
+import { trackUserActivity, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
 
 class WebSocketSession {
   private ws: WebSocket;
@@ -201,6 +206,11 @@ export default function App() {
   const [tempCoffeeLink, setTempCoffeeLink] = useState(coffeeLink);
   const [tempCreatorAlias, setTempCreatorAlias] = useState(creatorAlias);
 
+  // Estados de Feedback y Administración
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackTriggerSource, setFeedbackTriggerSource] = useState<'periodic' | 'manual' | 'quiz_finished' | 'oral_finished'>('manual');
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [showMobileInspector, setShowMobileInspector] = useState(false);
 
@@ -353,6 +363,33 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [isSimulatingGoogle, googleSimStep, googleSimEmail, googleSimName]);
+
+  // Seguimiento de actividad universal (registra tanto usuarios identificados como visitantes anónimos)
+  useEffect(() => {
+    const activeEmail = userEmail || driveUser?.email || localStorage.getItem('user_email');
+    const activeName = userDisplayName || driveUser?.displayName || localStorage.getItem('user_display_name');
+    trackUserActivity({
+      email: activeEmail || undefined,
+      displayName: activeName || undefined,
+      photoURL: driveUser?.photoURL || undefined,
+      uid: driveUser?.uid || undefined,
+      authProvider: driveUser ? 'google' : 'guest',
+      action: activeEmail ? `Ingreso de ${activeName || activeEmail}` : 'Visita a la aplicación',
+    });
+  }, [userEmail, userDisplayName, driveUser]);
+
+  // Activación periódica no intrusiva de solicitud de feedback
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (shouldPromptPeriodicFeedback()) {
+        setShowFeedbackModal(true);
+        setFeedbackTriggerSource('periodic');
+        recordFeedbackPromptShown();
+      }
+    }, 90 * 1000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     const handleApiKeyMissing = () => {
@@ -557,6 +594,12 @@ export default function App() {
     localStorage.setItem('user_display_name', displayName);
     setUserEmail(trimmedEmail);
     setUserDisplayName(displayName);
+
+    trackUserActivity({
+      email: trimmedEmail,
+      displayName,
+      authProvider: driveUser ? 'google' : 'guest',
+    });
     
     fetchUserHistory(trimmedEmail);
     setShowAuthModal(false);
@@ -613,6 +656,7 @@ export default function App() {
   };
 
   const handleUpdateOralSession = (updated: OralExamSession) => {
+    const wasCompletedBefore = activeOralSession?.id === updated.id && activeOralSession?.isCompleted;
     const updatedSessions = oralExamSessions.map(s => s.id === updated.id ? updated : s);
     setOralExamSessions(updatedSessions);
     setActiveOralSession(updated);
@@ -621,6 +665,14 @@ export default function App() {
       oralExamSessions: updatedSessions,
       activeOralSession: updated
     });
+
+    // Invitar a dejar feedback al finalizar un examen oral
+    if (updated.isCompleted && !wasCompletedBefore) {
+      setTimeout(() => {
+        setFeedbackTriggerSource('oral_finished');
+        setShowFeedbackModal(true);
+      }, 2000);
+    }
   };
 
   useEffect(() => {
@@ -1373,6 +1425,45 @@ export default function App() {
           </span>
         </button>
 
+        {/* Botón Feedback & Críticas Sinceras */}
+        <button
+          onClick={() => {
+            setFeedbackTriggerSource('manual');
+            setShowFeedbackModal(true);
+            setShowMobileSidebar(false);
+            setShowMobileInspector(false);
+          }}
+          className="w-full bg-amber-950/30 hover:bg-amber-900/40 text-amber-200 border border-amber-500/30 py-3 px-4 font-mono font-bold text-[9px] uppercase tracking-wider rounded-lg mt-2 cursor-pointer transition-colors flex items-center justify-between"
+          title="Opinar o reportar una crítica/falla"
+        >
+          <span className="flex items-center gap-2">
+            <MessageSquareHeart className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>💬 Feedback / Críticas</span>
+          </span>
+          <span className="text-[8px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-mono">
+            OPINAR
+          </span>
+        </button>
+
+        {/* Botón Comunidad & Lista de Usuarios */}
+        <button
+          onClick={() => {
+            setShowAdminPanel(true);
+            setShowMobileSidebar(false);
+            setShowMobileInspector(false);
+          }}
+          className="w-full bg-zinc-900/60 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 hover:border-amber-500/30 py-3 px-4 font-mono font-bold text-[9px] uppercase tracking-wider rounded-lg mt-2 cursor-pointer transition-colors flex items-center justify-between"
+          title="Ver quiénes usan la app y enviar correos"
+        >
+          <span className="flex items-center gap-2">
+            <Users className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>👥 Usuarios ({userEmail === 'martinvelozz01@gmail.com' ? 'Admin' : 'Ver'})</span>
+          </span>
+          <span className="text-[8px] bg-white/10 text-neutral-300 px-1.5 py-0.5 rounded font-mono">
+            LISTA
+          </span>
+        </button>
+
         <button
           onClick={() => {
             setShowApiKeyModal(true);
@@ -1405,12 +1496,25 @@ export default function App() {
           </div>
         </div>
 
-        <button
-          onClick={() => setShowMobileInspector(true)}
-          className="px-2.5 py-1.5 border border-white/10 hover:bg-white/5 text-[10px] font-mono font-bold uppercase tracking-wider rounded-lg flex items-center gap-1 cursor-pointer bg-transparent"
-        >
-          <span>📂 Fuentes</span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => {
+              setFeedbackTriggerSource('manual');
+              setShowFeedbackModal(true);
+            }}
+            className="p-1.5 border border-amber-500/30 bg-amber-500/10 text-amber-300 rounded-lg text-xs cursor-pointer"
+            title="Feedback y sugerencias"
+          >
+            <MessageSquareHeart className="w-3.5 h-3.5 text-amber-400" />
+          </button>
+
+          <button
+            onClick={() => setShowMobileInspector(true)}
+            className="px-2 py-1.5 border border-white/10 hover:bg-white/5 text-[10px] font-mono font-bold uppercase tracking-wider rounded-lg flex items-center gap-1 cursor-pointer bg-transparent"
+          >
+            <span>📂 Fuentes</span>
+          </button>
+        </div>
       </header>
 
       {/* Main Full-Screen Layout */}
@@ -1437,6 +1541,10 @@ export default function App() {
 
         {/* Main Viewport */}
         <main className="flex-grow flex flex-col overflow-y-auto grid-bg relative p-6 lg:p-12 z-10">
+          {/* Fondo Artístico de Proporción Áurea (φ) */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-0">
+            <GoldenRatioWatermark className="w-[520px] h-[520px] lg:w-[640px] lg:h-[640px] opacity-40 mix-blend-screen" />
+          </div>
 
       <AnimatePresence mode="wait">
           {viewMode === 'setup' && (
@@ -3766,13 +3874,55 @@ app.post('/api/create-checkout', async (req, res) => {
         )}
       </AnimatePresence>
 
+      {/* MODAL DE FEEDBACK & CRÍTICAS */}
+      <FeedbackModal
+        isOpen={showFeedbackModal}
+        onClose={() => setShowFeedbackModal(false)}
+        currentUserEmail={userEmail}
+        currentUserName={userDisplayName}
+        triggerSource={feedbackTriggerSource}
+      />
+
+      {/* PANEL DEL CREADOR (USUARIOS Y FEEDBACK) */}
+      <AdminPanel
+        isOpen={showAdminPanel}
+        onClose={() => setShowAdminPanel(false)}
+        currentUserEmail={userEmail}
+      />
+
       {/* Bottom Bar / Footer */}
-      <footer className="h-12 border-t border-white/5 px-8 flex items-center justify-between font-mono text-[9px] uppercase tracking-widest text-ink-muted bg-bg-systematic shrink-0 z-20">
-        <div className="flex items-center">
-          <span className="inline-block w-1.5 h-1.5 bg-accent-systematic rounded-full mr-2 animate-pulse"></span>
-          <span>{isExtracting ? 'SISTEMA_PROCESANDO_DOCUMENTOS' : 'SISTEMA_LISTO_PARA_PROCESAR'}</span>
+      <footer className="h-12 border-t border-white/5 px-4 sm:px-8 flex items-center justify-between font-mono text-[9px] uppercase tracking-widest text-ink-muted bg-bg-systematic shrink-0 z-20">
+        <div className="flex items-center gap-3 sm:gap-6">
+          <div className="flex items-center">
+            <span className="inline-block w-1.5 h-1.5 bg-accent-systematic rounded-full mr-2 animate-pulse"></span>
+            <span className="truncate max-w-[120px] sm:max-w-none">{isExtracting ? 'SISTEMA_PROCESANDO' : 'SISTEMA_LISTO'}</span>
+          </div>
+
+          <button
+            onClick={() => {
+              setFeedbackTriggerSource('manual');
+              setShowFeedbackModal(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition-colors cursor-pointer text-[9px] font-bold"
+            title="Enviar crítica o sugerencia para mejorar"
+          >
+            <MessageSquareHeart className="w-3 h-3 text-amber-400" />
+            <span className="hidden xs:inline">Feedback / Críticas</span>
+            <span className="xs:hidden">Feedback</span>
+          </button>
+
+          <button
+            onClick={() => setShowAdminPanel(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-300 hover:text-white border border-white/10 transition-colors cursor-pointer text-[9px] font-bold"
+            title="Ver quiénes usan la app y enviar correos"
+          >
+            <Users className="w-3 h-3 text-amber-400" />
+            <span className="hidden sm:inline">Comunidad ({userEmail === 'martinvelozz01@gmail.com' ? 'Admin' : 'Ver'})</span>
+            <span className="sm:hidden">Usuarios</span>
+          </button>
         </div>
-        <div className="hidden sm:block">
+
+        <div className="hidden md:flex items-center gap-3">
           <span>CAPA_DE_VOZ_CONECTADA_V2.0 // (C) 2024 AI TUTOR LABS</span>
         </div>
       </footer>
@@ -4949,6 +5099,7 @@ function MultipleChoiceQuiz({
           </motion.div>
         )}
       </AnimatePresence>
+      <GoldenRatioIconPreview />
     </div>
   );
 }

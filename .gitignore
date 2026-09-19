@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+.gcp_service_account.json
+user_activity_log.json
+user_feedback_db.json
+user_profiles_db.json

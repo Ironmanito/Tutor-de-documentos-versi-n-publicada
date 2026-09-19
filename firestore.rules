@@ -18,20 +18,40 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'martinvelozz01@gmail.com';
+    }
+
+    // User profiles & activity tracking
     match /users/{userId} {
-      allow get: if isOwner(userId) && isValidId(userId);
-      allow list: if false;
-      allow create: if isOwner(userId) && isValidId(userId);
-      allow update: if isOwner(userId) && isValidId(userId);
-      allow delete: if isOwner(userId) && isValidId(userId);
+      allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow list: if isAdmin();
+      allow create: if (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow delete: if isAdmin() && isValidId(userId);
 
       match /studies/{studyId} {
-        allow get: if isOwner(userId) && isValidId(studyId);
-        allow list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(studyId) && request.resource.data.userId == userId;
-        allow update: if isOwner(userId) && isValidId(studyId) && request.resource.data.userId == userId;
-        allow delete: if isOwner(userId) && isValidId(studyId);
+        allow get: if (isOwner(userId) || isAdmin()) && isValidId(studyId);
+        allow list: if isOwner(userId) || isAdmin();
+        allow create: if (isOwner(userId) && isValidId(studyId) && request.resource.data.userId == userId) || isAdmin();
+        allow update: if (isOwner(userId) && isValidId(studyId) && request.resource.data.userId == userId) || isAdmin();
+        allow delete: if (isOwner(userId) || isAdmin()) && isValidId(studyId);
       }
+    }
+
+    // Feedback collection
+    match /feedback/{feedbackId} {
+      // Anyone can submit feedback, even guests, provided valid payload
+      allow create: if isValidId(feedbackId)
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() > 0
+        && request.resource.data.comment.size() <= 5000
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5;
+      
+      // Only the app owner/admin can read, list, update or delete feedback
+      allow get, list, update, delete: if isAdmin();
     }
   }
 }

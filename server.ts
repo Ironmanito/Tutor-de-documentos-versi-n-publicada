@@ -12,14 +12,21 @@ import {
   uploadFileToGCS, 
   saveUserDbToGCS, 
   readUserDbFromGCS, 
+  saveUsersDbToGCS,
+  readUsersDbFromGCS,
+  saveFeedbackDbToGCS,
+  readFeedbackDbFromGCS,
   getBucketName, 
-  getStorageStatus 
+  getStorageStatus,
+  resolveGoogleCredentials,
+  resetStorageClient
 } from "./server/storage.ts";
 
 // ES Module compatibility for third-party CommonJS packages
 const mammoth = ((mammothModule as any).default || mammothModule) as any;
 
 dotenv.config();
+resolveGoogleCredentials();
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -77,6 +84,147 @@ readUserDbFromGCS().then(gcsData => {
 }).catch(err => {
   console.log("[GCS Initializer] Verificación de GCS completada (sin datos previos o bucket nuevo):", err.message || err);
 });
+
+// --- User Profiles Database (Who uses the app) ---
+const USER_PROFILES_PATH = path.join(process.cwd(), "user_profiles_db.json");
+const ACTIVITY_LOG_PATH = path.join(process.cwd(), "user_activity_log.json");
+
+interface UserProfile {
+  id: string;
+  email?: string;
+  visitorId?: string;
+  displayName: string;
+  photoURL?: string;
+  authProvider: 'google' | 'guest';
+  firstSeenAt: string;
+  lastSeenAt: string;
+  sessionCount: number;
+  studiesCount: number;
+  device?: string;
+  ip?: string;
+  isAnonymous?: boolean;
+  lastAction?: string;
+  actionsCount?: number;
+}
+
+interface ActivityEvent {
+  id: string;
+  visitorId: string;
+  userEmail?: string;
+  userName?: string;
+  action: string;
+  details?: string;
+  timestamp: string;
+  device?: string;
+}
+
+function readUsersDb(): Record<string, UserProfile> {
+  try {
+    if (!fs.existsSync(USER_PROFILES_PATH)) {
+      return {};
+    }
+    const data = fs.readFileSync(USER_PROFILES_PATH, "utf8");
+    return JSON.parse(data) || {};
+  } catch (err) {
+    console.error("Error reading users profile DB:", err);
+    return {};
+  }
+}
+
+async function writeUsersDb(users: Record<string, UserProfile>) {
+  try {
+    fs.writeFileSync(USER_PROFILES_PATH, JSON.stringify(users, null, 2), "utf8");
+    await saveUsersDbToGCS(users);
+  } catch (err) {
+    console.error("Error writing users profile DB:", err);
+  }
+}
+
+function readActivityLog(): ActivityEvent[] {
+  try {
+    if (!fs.existsSync(ACTIVITY_LOG_PATH)) {
+      return [];
+    }
+    const data = fs.readFileSync(ACTIVITY_LOG_PATH, "utf8");
+    return JSON.parse(data) || [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function appendActivityLog(event: ActivityEvent) {
+  try {
+    const log = readActivityLog();
+    log.unshift(event);
+    const trimmed = log.slice(0, 150); // keep last 150 events
+    fs.writeFileSync(ACTIVITY_LOG_PATH, JSON.stringify(trimmed, null, 2), "utf8");
+  } catch (err) {
+    console.warn("Could not append activity log:", err);
+  }
+}
+
+// Initial sync users from GCS
+readUsersDbFromGCS().then(gcsUsers => {
+  if (gcsUsers && Object.keys(gcsUsers).length > 0) {
+    try {
+      fs.writeFileSync(USER_PROFILES_PATH, JSON.stringify(gcsUsers, null, 2), "utf8");
+      console.log("[GCS Initializer] Perfiles de usuario sincronizados desde GCS.");
+    } catch (e) {
+      console.warn("[GCS Initializer] Error guardando perfiles locales:", e);
+    }
+  }
+}).catch(() => {});
+
+// --- User Feedback Database (Feedback & Critiques) ---
+const USER_FEEDBACK_PATH = path.join(process.cwd(), "user_feedback_db.json");
+
+interface FeedbackItem {
+  id: string;
+  userId?: string;
+  userEmail?: string;
+  userName?: string;
+  rating: number; // 1 to 5
+  category: 'critique' | 'bug' | 'voice_tutor' | 'exam' | 'suggestion' | 'general';
+  comment: string;
+  status: 'new' | 'reviewed' | 'replied';
+  createdAt: string;
+  device?: string;
+  allowContact?: boolean;
+}
+
+function readFeedbackDb(): FeedbackItem[] {
+  try {
+    if (!fs.existsSync(USER_FEEDBACK_PATH)) {
+      return [];
+    }
+    const data = fs.readFileSync(USER_FEEDBACK_PATH, "utf8");
+    return JSON.parse(data) || [];
+  } catch (err) {
+    console.error("Error reading feedback DB:", err);
+    return [];
+  }
+}
+
+async function writeFeedbackDb(items: FeedbackItem[]) {
+  try {
+    fs.writeFileSync(USER_FEEDBACK_PATH, JSON.stringify(items, null, 2), "utf8");
+    await saveFeedbackDbToGCS(items);
+  } catch (err) {
+    console.error("Error writing feedback DB:", err);
+  }
+}
+
+// Initial sync feedback from GCS
+readFeedbackDbFromGCS().then(gcsFeedback => {
+  if (gcsFeedback && Array.isArray(gcsFeedback) && gcsFeedback.length > 0) {
+    try {
+      fs.writeFileSync(USER_FEEDBACK_PATH, JSON.stringify(gcsFeedback, null, 2), "utf8");
+      console.log("[GCS Initializer] Feedback sincronizado desde GCS.");
+    } catch (e) {
+      console.warn("[GCS Initializer] Error guardando feedback local:", e);
+    }
+  }
+}).catch(() => {});
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -175,6 +323,7 @@ app.post("/api/storage/set-bucket", (req, res) => {
     return res.status(400).json({ error: "Nombre de bucket inválido" });
   }
   process.env.GCS_BUCKET_NAME = bucketName.trim();
+  resetStorageClient();
   console.log(`[Google Cloud Storage] Bucket configurado dinámicamente a: ${bucketName.trim()}`);
   res.json({ success: true, ...getStorageStatus() });
 });
@@ -404,6 +553,230 @@ app.delete("/api/history", (req, res) => {
   }
   
   res.json({ success: true });
+});
+
+// ==========================================
+// USER & VISITOR TRACKING ENDPOINTS
+// ==========================================
+
+app.post("/api/users/track", (req, res) => {
+  try {
+    const { email, displayName, photoURL, authProvider, device, visitorId, action, details } = req.body;
+    
+    // Si no hay email ni visitorId, generar uno basado en la sesión o rechazar
+    const cleanVisitorId = visitorId && typeof visitorId === "string" ? visitorId.trim() : `vis_${Date.now()}`;
+    const cleanEmail = email && typeof email === "string" && email.includes('@') ? email.trim().toLowerCase() : undefined;
+
+    const users = readUsersDb();
+    const now = new Date().toISOString();
+    const studiesDb = readUserDb();
+    const userStudiesCount = cleanEmail ? (studiesDb[cleanEmail] || []).length : 0;
+
+    const userKey = cleanEmail || `visitor:${cleanVisitorId}`;
+    const isAnon = !cleanEmail;
+    const shortId = cleanVisitorId.replace('vis_', '').substring(0, 6);
+    const resolvedName = displayName || (isAnon ? `Visitante #${shortId}` : cleanEmail.split('@')[0]);
+
+    if (users[userKey]) {
+      users[userKey] = {
+        ...users[userKey],
+        id: userKey,
+        email: cleanEmail || users[userKey].email,
+        visitorId: cleanVisitorId,
+        displayName: resolvedName,
+        photoURL: photoURL || users[userKey].photoURL,
+        authProvider: authProvider || users[userKey].authProvider,
+        lastSeenAt: now,
+        sessionCount: (users[userKey].sessionCount || 1) + 1,
+        studiesCount: Math.max(users[userKey].studiesCount || 0, userStudiesCount),
+        device: device || users[userKey].device,
+        isAnonymous: isAnon,
+        lastAction: action || users[userKey].lastAction || 'Ingresó a la app',
+        actionsCount: (users[userKey].actionsCount || 1) + 1
+      };
+    } else {
+      users[userKey] = {
+        id: userKey,
+        email: cleanEmail,
+        visitorId: cleanVisitorId,
+        displayName: resolvedName,
+        photoURL: photoURL || '',
+        authProvider: authProvider || (isAnon ? 'guest' : 'google'),
+        firstSeenAt: now,
+        lastSeenAt: now,
+        sessionCount: 1,
+        studiesCount: userStudiesCount,
+        device: device || '',
+        isAnonymous: isAnon,
+        lastAction: action || 'Ingresó a la app',
+        actionsCount: 1
+      };
+    }
+
+    // Si un visitante anónimo ahora dio su email, podemos limpiar la clave anónima previa para no duplicar
+    if (cleanEmail && cleanVisitorId && users[`visitor:${cleanVisitorId}`]) {
+      delete users[`visitor:${cleanVisitorId}`];
+    }
+
+    writeUsersDb(users);
+
+    // Registrar en el log cronológico de eventos
+    appendActivityLog({
+      id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      visitorId: cleanVisitorId,
+      userEmail: cleanEmail,
+      userName: resolvedName,
+      action: action || (isAnon ? 'Visita anónima al sitio' : 'Ingreso de usuario'),
+      details: details || (device ? device.substring(0, 70) : undefined),
+      timestamp: now,
+      device: device || undefined
+    });
+
+    res.json({ success: true, user: users[userKey] });
+  } catch (error: any) {
+    console.error("[User Tracking] Error:", error);
+    res.status(500).json({ error: error.message || "Error al registrar actividad de usuario" });
+  }
+});
+
+app.get("/api/admin/users", (req, res) => {
+  try {
+    const users = readUsersDb();
+    const studiesDb = readUserDb();
+    const userList = Object.values(users).map(u => {
+      const realStudiesCount = u.email ? (studiesDb[u.email.toLowerCase()] || []).length : (u.studiesCount || 0);
+      return {
+        ...u,
+        studiesCount: Math.max(u.studiesCount || 0, realStudiesCount)
+      };
+    }).sort((a, b) => new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime());
+
+    const registeredUsers = userList.filter(u => u.email && u.email.includes('@'));
+    const anonymousVisitors = userList.filter(u => !u.email || u.isAnonymous);
+    const totalVisits = userList.reduce((acc, u) => acc + (u.sessionCount || 1), 0);
+    const activityLog = readActivityLog();
+
+    res.json({
+      users: userList,
+      registeredUsers,
+      anonymousVisitors,
+      totalCount: userList.length,
+      registeredCount: registeredUsers.length,
+      anonymousCount: anonymousVisitors.length,
+      totalVisits,
+      recentActivity: activityLog,
+      activeToday: userList.filter(u => {
+        const last = new Date(u.lastSeenAt).getTime();
+        return (Date.now() - last) < 24 * 60 * 60 * 1000;
+      }).length
+    });
+  } catch (error: any) {
+    console.error("[Admin Users] Error:", error);
+    res.status(500).json({ error: error.message || "Error al obtener usuarios" });
+  }
+});
+
+// ==========================================
+// FEEDBACK & CRITIQUES ENDPOINTS
+// ==========================================
+
+app.post("/api/feedback", (req, res) => {
+  try {
+    const { userId, userEmail, userName, rating, category, comment, device, allowContact } = req.body;
+    if (!comment || typeof comment !== "string" || !comment.trim()) {
+      return res.status(400).json({ error: "El comentario es obligatorio" });
+    }
+
+    const feedbackList = readFeedbackDb();
+    const id = `fb_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+
+    const newFeedback: FeedbackItem = {
+      id,
+      userId: userId || undefined,
+      userEmail: userEmail ? userEmail.trim().toLowerCase() : undefined,
+      userName: userName ? userName.trim() : undefined,
+      rating: typeof rating === 'number' && rating >= 1 && rating <= 5 ? rating : 3,
+      category: category || 'general',
+      comment: comment.trim(),
+      status: 'new',
+      createdAt: now,
+      device: device || undefined,
+      allowContact: allowContact !== false
+    };
+
+    feedbackList.unshift(newFeedback);
+    writeFeedbackDb(feedbackList);
+
+    // If user provided an email, also ensure they are in the users list
+    if (userEmail && userEmail.includes('@')) {
+      const users = readUsersDb();
+      const cleanEmail = userEmail.trim().toLowerCase();
+      if (!users[cleanEmail]) {
+        users[cleanEmail] = {
+          id: cleanEmail,
+          email: cleanEmail,
+          visitorId: cleanEmail,
+          displayName: userName || cleanEmail.split('@')[0],
+          authProvider: 'guest',
+          firstSeenAt: now,
+          lastSeenAt: now,
+          sessionCount: 1,
+          studiesCount: 0,
+          device: device || '',
+          isAnonymous: false,
+          lastAction: 'Envió feedback',
+          actionsCount: 1
+        };
+        writeUsersDb(users);
+      }
+    }
+
+    console.log(`[Feedback] Recibido nuevo feedback (${newFeedback.rating}★ [${newFeedback.category}]): ${newFeedback.comment.substring(0, 60)}...`);
+    res.json({ success: true, feedback: newFeedback });
+  } catch (error: any) {
+    console.error("[Feedback] Error:", error);
+    res.status(500).json({ error: error.message || "Error al procesar feedback" });
+  }
+});
+
+app.get("/api/admin/feedback", (req, res) => {
+  try {
+    const feedbackList = readFeedbackDb();
+    res.json({
+      feedback: feedbackList,
+      totalCount: feedbackList.length,
+      averageRating: feedbackList.length > 0 
+        ? +(feedbackList.reduce((acc, f) => acc + f.rating, 0) / feedbackList.length).toFixed(1)
+        : 0,
+      critiquesCount: feedbackList.filter(f => f.category === 'critique' || f.category === 'bug' || f.rating <= 2).length
+    });
+  } catch (error: any) {
+    console.error("[Admin Feedback] Error:", error);
+    res.status(500).json({ error: error.message || "Error al obtener feedback" });
+  }
+});
+
+app.patch("/api/admin/feedback/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const feedbackList = readFeedbackDb();
+    const index = feedbackList.findIndex(f => f.id === id);
+    if (index === -1) {
+      return res.status(404).json({ error: "Feedback no encontrado" });
+    }
+
+    if (status && ['new', 'reviewed', 'replied'].includes(status)) {
+      feedbackList[index].status = status;
+      writeFeedbackDb(feedbackList);
+    }
+
+    res.json({ success: true, feedback: feedbackList[index] });
+  } catch (error: any) {
+    console.error("[Admin Feedback Patch] Error:", error);
+    res.status(500).json({ error: error.message || "Error al actualizar feedback" });
+  }
 });
 
 function cleanJsonText(rawText: string): string {

@@ -22,7 +22,7 @@ export const AppLogo: React.FC<AppLogoProps> = ({
   return (
     <div className={`relative inline-flex items-center justify-center shrink-0 ${sizeMap[size]} ${className}`}>
       {withGlow && (
-        <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-accent-systematic/30 to-sky-400/20 blur-md opacity-70 group-hover:opacity-100 transition-opacity pointer-events-none" />
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-amber-500/30 to-yellow-300/20 blur-md opacity-75 group-hover:opacity-100 transition-opacity pointer-events-none" />
       )}
       <svg
         viewBox="0 0 512 512"
@@ -31,118 +31,92 @@ export const AppLogo: React.FC<AppLogoProps> = ({
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
-          <linearGradient id="logoBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#141418" />
-            <stop offset="50%" stopColor="#0E0E11" />
-            <stop offset="100%" stopColor="#070709" />
-          </linearGradient>
-
-          <linearGradient id="logoBorderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#FF4D00" stopOpacity="0.9" />
-            <stop offset="40%" stopColor="#FF7A00" stopOpacity="0.3" />
-            <stop offset="70%" stopColor="#38BDF8" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.8" />
-          </linearGradient>
-
-          <linearGradient id="logoAccentOrange" x1="0%" y1="100%" x2="0%" y2="0%">
-            <stop offset="0%" stopColor="#E03800" />
-            <stop offset="50%" stopColor="#FF4D00" />
-            <stop offset="100%" stopColor="#FFA000" />
-          </linearGradient>
-
-          <linearGradient id="logoVoiceCyan" x1="0%" y1="100%" x2="0%" y2="0%">
-            <stop offset="0%" stopColor="#0284C7" />
-            <stop offset="60%" stopColor="#38BDF8" />
-            <stop offset="100%" stopColor="#BAE6FD" />
-          </linearGradient>
-
-          <linearGradient id="logoLeftPage" x1="100%" y1="50%" x2="0%" y2="50%">
-            <stop offset="0%" stopColor="#1F1F26" />
-            <stop offset="100%" stopColor="#15151B" />
-          </linearGradient>
-
-          <linearGradient id="logoRightPage" x1="0%" y1="50%" x2="100%" y2="50%">
-            <stop offset="0%" stopColor="#24242D" />
-            <stop offset="100%" stopColor="#181820" />
-          </linearGradient>
-
-          <radialGradient id="logoCenterGlow" cx="50%" cy="48%" r="45%">
-            <stop offset="0%" stopColor="#FF4D00" stopOpacity="0.35" />
-            <stop offset="50%" stopColor="#FF4D00" stopOpacity="0.1" />
-            <stop offset="100%" stopColor="#FF4D00" stopOpacity="0" />
+          <radialGradient id="appLogoBg" cx="50%" cy="50%" r="72%">
+            <stop offset="0%" stopColor="#2E1C07" />
+            <stop offset="45%" stopColor="#1C1104" />
+            <stop offset="78%" stopColor="#100A02" />
+            <stop offset="100%" stopColor="#080501" />
           </radialGradient>
+          <radialGradient id="appLogoAura" cx="50%" cy="50%" r="55%">
+            <stop offset="0%" stopColor="#F59E0B" stopOpacity="0.5" />
+            <stop offset="35%" stopColor="#D97706" stopOpacity="0.25" />
+            <stop offset="70%" stopColor="#78350F" stopOpacity="0.08" />
+            <stop offset="100%" stopColor="#000000" stopOpacity="0" />
+          </radialGradient>
+          <linearGradient id="appLogoSpiral1" x1="0%" y1="100%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#92400E" />
+            <stop offset="35%" stopColor="#D97706" />
+            <stop offset="70%" stopColor="#FBBF24" />
+            <stop offset="100%" stopColor="#FFFBEB" />
+          </linearGradient>
+          <linearGradient id="appLogoSpiral2" x1="100%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#B45309" />
+            <stop offset="35%" stopColor="#F59E0B" />
+            <stop offset="70%" stopColor="#FDE68A" />
+            <stop offset="100%" stopColor="#FFFFFF" />
+          </linearGradient>
+          <linearGradient id="appLogoFlower" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#FFFBEB" stopOpacity="0.6" />
+            <stop offset="50%" stopColor="#FBBF24" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="#B45309" stopOpacity="0.3" />
+          </linearGradient>
         </defs>
 
         {/* Base Squircle */}
-        <rect x="0" y="0" width="512" height="512" rx="116" fill="url(#logoBgGrad)" />
-        <rect x="6" y="6" width="500" height="500" rx="110" fill="none" stroke="url(#logoBorderGrad)" strokeWidth="4" opacity="0.75" />
+        <rect x="0" y="0" width="512" height="512" rx="118" fill="url(#appLogoBg)" />
+        <rect x="8" y="8" width="496" height="496" rx="112" stroke="#F59E0B" strokeOpacity="0.25" strokeWidth="2" fill="none" />
+        <circle cx="256" cy="256" r="210" fill="url(#appLogoAura)" />
 
-        {/* Backdrop Ambient Light */}
-        <circle cx="256" cy="245" r="180" fill="url(#logoCenterGlow)" />
+        {/* Flor de la Vida */}
+        <g stroke="url(#appLogoFlower)" strokeWidth="1.8" fill="none">
+          <circle cx="256" cy="256" r="68" />
+          <circle cx="324" cy="256" r="68" />
+          <circle cx="290" cy="314.89" r="68" />
+          <circle cx="222" cy="314.89" r="68" />
+          <circle cx="188" cy="256" r="68" />
+          <circle cx="222" cy="197.11" r="68" />
+          <circle cx="290" cy="197.11" r="68" />
+          <circle cx="256" cy="256" r="136" stroke="#FBBF24" strokeWidth="2" strokeOpacity="0.6" />
+        </g>
 
-        {/* Notebook Body */}
-        <g transform="translate(0, 15)">
-          <path d="M 96 325 C 160 305 240 315 256 332 C 272 315 352 305 416 325 C 416 338 272 376 256 376 C 240 376 96 338 96 325 Z" fill="#000000" opacity="0.6" />
+        {/* Espiral Áurea */}
+        <path
+          d="M 256 256 A 13 13 0 0 1 243 269 A 21 21 0 0 1 222 248 A 34 34 0 0 1 256 214 A 55 55 0 0 1 311 269 A 89 89 0 0 1 222 358 A 144 144 0 0 1 78 214 A 233 233 0 0 1 311 -19"
+          fill="none"
+          stroke="url(#appLogoSpiral1)"
+          strokeWidth="5"
+          strokeLinecap="round"
+        />
 
-          {/* Left Page */}
+        {/* Contra-Espiral Áurea */}
+        <g transform="rotate(180, 256, 256)">
           <path
-            d="M 104 316 C 164 298 238 308 252 322 L 252 186 C 238 174 164 162 104 180 Z"
-            fill="url(#logoLeftPage)"
-            stroke="#38384A"
-            strokeWidth="3"
+            d="M 256 256 A 13 13 0 0 1 243 269 A 21 21 0 0 1 222 248 A 34 34 0 0 1 256 214 A 55 55 0 0 1 311 269 A 89 89 0 0 1 222 358 A 144 144 0 0 1 78 214 A 233 233 0 0 1 311 -19"
+            fill="none"
+            stroke="url(#appLogoSpiral2)"
+            strokeWidth="5"
+            strokeLinecap="round"
+          />
+        </g>
+
+        {/* Estrella de 5 puntas */}
+        <g transform="translate(256, 256)">
+          <polygon
+            points="0,-89 21,-29 85,-27 34,11 52,72 0,34 -52,72 -34,11 -85,-27 -21,-29"
+            fill="#F59E0B"
+            fillOpacity="0.25"
+            stroke="url(#appLogoSpiral1)"
+            strokeWidth="4"
             strokeLinejoin="round"
           />
-
-          {/* Right Page */}
-          <path
-            d="M 260 322 C 274 308 348 298 408 316 L 408 180 C 348 162 274 174 260 186 Z"
-            fill="url(#logoRightPage)"
-            stroke="#404054"
-            strokeWidth="3"
+          <polygon
+            points="0,-89 52,72 -85,-27 85,-27 -52,72"
+            fill="none"
+            stroke="#FFFBEB"
+            strokeWidth="2.5"
             strokeLinejoin="round"
           />
-
-          {/* Page Leaf Trim */}
-          <path d="M 104 316 L 104 322 C 164 304 238 314 252 328 L 252 322" fill="none" stroke="#FF4D00" strokeWidth="2.5" opacity="0.5" />
-          <path d="M 408 316 L 408 322 C 348 304 274 314 260 328 L 260 322" fill="none" stroke="#38BDF8" strokeWidth="2.5" opacity="0.5" />
-
-          {/* Left Page Lines */}
-          <line x1="132" y1="210" x2="228" y2="202" stroke="#606078" strokeWidth="4.5" strokeLinecap="round" opacity="0.8" />
-          <line x1="132" y1="236" x2="228" y2="228" stroke="#606078" strokeWidth="4.5" strokeLinecap="round" opacity="0.8" />
-          <line x1="132" y1="262" x2="200" y2="255" stroke="#606078" strokeWidth="4.5" strokeLinecap="round" opacity="0.6" />
-          <line x1="132" y1="288" x2="216" y2="281" stroke="#FF4D00" strokeWidth="4.5" strokeLinecap="round" opacity="0.75" />
-
-          {/* Right Page Lines */}
-          <line x1="284" y1="202" x2="380" y2="210" stroke="#606078" strokeWidth="4.5" strokeLinecap="round" opacity="0.8" />
-          <line x1="284" y1="228" x2="380" y2="236" stroke="#606078" strokeWidth="4.5" strokeLinecap="round" opacity="0.8" />
-          <line x1="284" y1="255" x2="352" y2="262" stroke="#38BDF8" strokeWidth="4.5" strokeLinecap="round" opacity="0.75" />
-          <line x1="284" y1="281" x2="368" y2="288" stroke="#606078" strokeWidth="4.5" strokeLinecap="round" opacity="0.6" />
-
-          {/* Central Spine */}
-          <line x1="256" y1="182" x2="256" y2="328" stroke="#FF4D00" strokeWidth="3.5" strokeLinecap="round" />
-        </g>
-
-        {/* Rising AI Voice Wave Equalizer Bars */}
-        <rect x="188" y="142" width="10" height="42" rx="5" fill="url(#logoAccentOrange)" opacity="0.85" />
-        <rect x="210" y="112" width="11" height="80" rx="5.5" fill="url(#logoAccentOrange)" />
-        <rect x="233" y="86" width="12" height="114" rx="6" fill="url(#logoAccentOrange)" />
-        <rect x="267" y="86" width="12" height="114" rx="6" fill="url(#logoAccentOrange)" />
-        <rect x="291" y="112" width="11" height="80" rx="5.5" fill="url(#logoVoiceCyan)" />
-        <rect x="314" y="142" width="10" height="42" rx="5" fill="url(#logoVoiceCyan)" opacity="0.9" />
-
-        {/* Central AI Sparkle Star */}
-        <g transform="translate(256, 68)">
-          <path d="M 0 -24 Q 0 0 24 0 Q 0 0 0 24 Q 0 0 -24 0 Q 0 0 0 -24 Z" fill="#FFFFFF" />
-          <circle cx="0" cy="0" r="5" fill="#FF4D00" />
-        </g>
-
-        {/* Accent Sparkles */}
-        <g transform="translate(340, 102)">
-          <path d="M 0 -12 Q 0 0 12 0 Q 0 0 0 12 Q 0 0 -12 0 Q 0 0 0 -12 Z" fill="#38BDF8" />
-        </g>
-
-        <g transform="translate(172, 116)">
-          <path d="M 0 -9 Q 0 0 9 0 Q 0 0 0 9 Q 0 0 -9 0 Q 0 0 0 -9 Z" fill="#FFA000" />
+          <circle cx="0" cy="0" r="4.5" fill="#F59E0B" />
         </g>
       </svg>
     </div>
