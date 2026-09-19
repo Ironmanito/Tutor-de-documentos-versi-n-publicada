@@ -13,6 +13,7 @@ import { GoldenRatioIconPreview } from './components/GoldenRatioIconPreview';
 import { GoldenRatioWatermark } from './components/GoldenRatioWatermark';
 import { FeedbackModal } from './components/FeedbackModal';
 import { AdminPanel } from './components/AdminPanel';
+import { UploadProgressAnimation } from './components/UploadProgressAnimation';
 import { trackUserActivity, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
 
 class WebSocketSession {
@@ -130,6 +131,11 @@ function getFetchHeaders(): Record<string, string> {
 export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState(0);
+  const [currentExtractingFile, setCurrentExtractingFile] = useState<string>('');
+  const [extractingFileIndex, setExtractingFileIndex] = useState(1);
+  const [extractingTotalFiles, setExtractingTotalFiles] = useState(1);
+  const [extractingFileNamesList, setExtractingFileNamesList] = useState<string[]>([]);
   const [studyText, setStudyText] = useState<string>('');
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
   const [activeFileNames, setActiveFileNames] = useState<string[]>([]);
@@ -706,8 +712,9 @@ export default function App() {
   };
 
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
+    if (e.target.files && e.target.files.length > 0) {
       const selectedFiles = Array.from(e.target.files) as File[];
+      e.target.value = ''; // Reset input so re-selecting the same file fires onChange every time
       await addFiles(selectedFiles);
     }
   };
@@ -835,23 +842,30 @@ export default function App() {
 
   const handleImportSelectedDriveFiles = async () => {
     if (selectedDriveFileIds.length === 0) return;
-    if (!activeStudyTitle.trim()) {
-      alert("Por favor escribe el nombre de tu cuaderno antes de importar archivos.");
-      return;
-    }
     if (!driveAccessToken) {
       alert("Debes conectar tu cuenta de Google Drive.");
       return;
     }
 
+    const filesToImport = driveFiles.filter(f => selectedDriveFileIds.includes(f.id));
+    if (filesToImport.length === 0) return;
+
+    // Auto-generate title if currently empty
+    if (!activeStudyTitle.trim()) {
+      const autoTitle = filesToImport[0].name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim();
+      if (autoTitle) {
+        setActiveStudyTitle(autoTitle);
+      }
+    }
+
     setIsImportingDriveFiles(true);
     try {
-      const filesToImport = driveFiles.filter(f => selectedDriveFileIds.includes(f.id));
       const importedFiles: File[] = [];
 
       for (const df of filesToImport) {
         const result = await importDriveFile(driveAccessToken, df);
-        const fileObj = new File([result.text], result.fileName, { type: 'text/plain' });
+        const fileObj = new File([result.text], result.fileName || df.name, { type: 'text/plain' });
+        (fileObj as any).preExtractedText = result.text;
         importedFiles.push(fileObj);
       }
 
@@ -879,6 +893,7 @@ export default function App() {
       f.type.startsWith('text/') || 
       f.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
       f.type === 'application/msword' ||
+      f.name.toLowerCase().endsWith('.pdf') || 
       f.name.toLowerCase().endsWith('.md') || 
       f.name.toLowerCase().endsWith('.txt') ||
       f.name.toLowerCase().endsWith('.csv') ||
@@ -888,8 +903,20 @@ export default function App() {
     );
 
     if (validFiles.length === 0) {
-      alert('Por favor, sube archivos válidos (PDF, Word, Google Docs o Texto).');
+      if (newFiles.length > 0) {
+        alert(`No se pudo procesar el archivo "${newFiles[0].name}". Formato no reconocido. Los formatos permitidos son PDF (.pdf), Word (.docx), Google Docs o Texto (.txt, .md, .csv).`);
+      } else {
+        alert('Por favor, selecciona archivos válidos (PDF, Word, Google Docs o Texto).');
+      }
       return;
+    }
+
+    // If active study title is empty, automatically use the first uploaded file's title
+    if (!activeStudyTitle.trim() && validFiles.length > 0) {
+      const derivedTitle = validFiles[0].name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").trim();
+      if (derivedTitle) {
+        setActiveStudyTitle(derivedTitle);
+      }
     }
 
     if (userTier === 'free' && (files.length + validFiles.length) > 2) {
@@ -899,19 +926,48 @@ export default function App() {
     }
 
     setIsExtracting(true);
+    setExtractingTotalFiles(validFiles.length);
+    setExtractingFileNamesList(validFiles.map(f => f.name));
+    setExtractProgress(12);
+
+    let simulatedProgress = 12;
+    const progressInterval = setInterval(() => {
+      simulatedProgress = Math.min(simulatedProgress + Math.floor(Math.random() * 5) + 2, 92);
+      setExtractProgress(simulatedProgress);
+    }, 280);
+
     try {
       const newFileTexts = { ...fileTexts };
       const newActiveFileNames = [...activeFileNames];
       const successfullyExtractedFiles: File[] = [];
       
-      for (const file of validFiles) {
+      for (let i = 0; i < validFiles.length; i++) {
+        const file = validFiles[i];
+        setCurrentExtractingFile(file.name);
+        setExtractingFileIndex(i + 1);
+
         try {
-          const text = await extractTextFromFile(file);
+          let text = '';
+          if ((file as any).preExtractedText) {
+            text = (file as any).preExtractedText;
+          } else {
+            text = await extractTextFromFile(file);
+          }
+
+          if (!text || text.trim().length === 0) {
+            throw new Error(`El archivo "${file.name}" no contiene texto que se pueda extraer (puede ser un PDF escaneado sin capa de texto).`);
+          }
+
           newFileTexts[file.name] = text;
           if (!newActiveFileNames.includes(file.name)) {
             newActiveFileNames.push(file.name);
           }
           successfullyExtractedFiles.push(file);
+
+          // Boost progress dynamically based on completed files
+          const completedFraction = Math.round(((i + 1) / validFiles.length) * 88);
+          simulatedProgress = Math.max(simulatedProgress, completedFraction);
+          setExtractProgress(simulatedProgress);
         } catch (fileError: any) {
           console.error(`Error extracting file ${file.name}:`, fileError);
           alert(`Error al procesar "${file.name}":\n${fileError.message || fileError}`);
@@ -925,11 +981,20 @@ export default function App() {
         setActiveFileNames(newActiveFileNames);
         rebuildStudyText(updatedFiles, newActiveFileNames, newFileTexts);
       }
+
+      // Smooth completion
+      clearInterval(progressInterval);
+      setExtractProgress(100);
+      await new Promise((res) => setTimeout(res, 550));
     } catch (error: any) {
       console.error('Error extracting text:', error);
       alert(`Hubo un error al procesar los archivos:\n${error.message || error}`);
     } finally {
+      clearInterval(progressInterval);
       setIsExtracting(false);
+      setExtractProgress(0);
+      setCurrentExtractingFile('');
+      setExtractingFileIndex(1);
     }
   };
 
@@ -1608,13 +1673,14 @@ export default function App() {
                           Has alcanzado el límite de 2 cuadernos de estudio en tu cuenta gratuita. <span className="text-accent-systematic underline group-hover:text-accent-systematic/80 font-bold">Haz clic aquí para actualizar a PRO</span> y disfrutar de cuadernos ilimitados.
                         </p>
                       </div>
-                    ) : activeStudyTitle.trim() === '' ? (
-                      <div className="w-full border-2 border-dashed border-white/10 p-8 bg-black/10 text-center rounded-xl">
-                        <span className="text-lg block mb-1.5">✍️</span>
-                        <p className="text-[10px] text-ink-muted leading-relaxed font-mono">
-                          Escribe el nombre de tu cuaderno arriba para habilitar la subida de archivos.
-                        </p>
-                      </div>
+                    ) : isExtracting ? (
+                      <UploadProgressAnimation
+                        currentFileName={currentExtractingFile || (files[files.length - 1]?.name) || "Documento de estudio"}
+                        currentFileIndex={extractingFileIndex}
+                        totalFiles={extractingTotalFiles}
+                        allFileNames={extractingFileNamesList}
+                        progress={extractProgress}
+                      />
                     ) : (
                       <div className="space-y-3">
                         <div
@@ -1627,15 +1693,19 @@ export default function App() {
                             id="file-upload"
                             type="file"
                             multiple
-                            accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,text/plain,text/markdown,.md,.txt,.csv,.docx,.doc,.gdoc"
+                            accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,.docx,.doc,text/plain,text/markdown,.md,.txt,.csv,.gdoc"
                             className="hidden"
+                            onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
                             onChange={handleFileInput}
                           />
                           <div className="font-mono text-[10px] text-accent-systematic uppercase tracking-widest font-bold mb-1">
                             + Subir Fuentes Locales (PDF, Word, TXT, .gdoc)
                           </div>
                           <p className="text-[10px] text-ink-muted leading-relaxed font-mono">
-                            Haz clic para explorar o arrastra tus archivos aquí para "{activeStudyTitle}".
+                            {activeStudyTitle 
+                              ? `Haz clic para explorar o arrastra tus archivos aquí para "${activeStudyTitle}".`
+                              : 'Haz clic para explorar o arrastra tus archivos aquí (crearemos el cuaderno con el nombre de tu archivo).'
+                            }
                           </p>
                           <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center gap-1.5 text-[8.5px] font-mono text-emerald-400">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
@@ -1764,7 +1834,7 @@ export default function App() {
                     </p>
                     <div className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest font-bold">
                       {isExtracting 
-                        ? "Extrayendo contenido..." 
+                        ? `Extrayendo contenido... (${Math.round(extractProgress)}%)` 
                         : "Esperando selección..."
                       }
                     </div>
@@ -3890,6 +3960,40 @@ app.post('/api/create-checkout', async (req, res) => {
         currentUserEmail={userEmail}
       />
 
+      {/* Dynamic Floating Extraction Progress Toast */}
+      <AnimatePresence>
+        {isExtracting && (
+          <motion.div
+            initial={{ opacity: 0, y: 30, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 30, scale: 0.95 }}
+            className="fixed bottom-16 right-4 sm:right-8 z-50 bg-[#18181b] border border-accent-systematic/50 rounded-2xl p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.85)] max-w-sm w-[90vw] sm:w-80 backdrop-blur-lg"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-accent-systematic/15 border border-accent-systematic/30 flex items-center justify-center shrink-0">
+                <Loader2 className="w-5 h-5 text-accent-systematic animate-spin" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between text-xs font-mono mb-1">
+                  <span className="font-bold text-white truncate max-w-[170px]">
+                    {currentExtractingFile || "Procesando apunte..."}
+                  </span>
+                  <span className="text-accent-systematic font-bold text-[10.5px] bg-accent-systematic/15 px-1.5 py-0.5 rounded">
+                    {Math.round(extractProgress)}%
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-black/60 rounded-full overflow-hidden border border-white/5">
+                  <div
+                    className="h-full bg-gradient-to-r from-accent-systematic via-amber-400 to-emerald-400 transition-all duration-300 rounded-full"
+                    style={{ width: `${Math.min(Math.max(extractProgress, 5), 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Bottom Bar / Footer */}
       <footer className="h-12 border-t border-white/5 px-4 sm:px-8 flex items-center justify-between font-mono text-[9px] uppercase tracking-widest text-ink-muted bg-bg-systematic shrink-0 z-20">
         <div className="flex items-center gap-3 sm:gap-6">
@@ -4018,31 +4122,75 @@ function ApiKeyErrorGuide({ onRetry }: { onRetry?: () => void }) {
   );
 }
 
-function MicErrorGuide() {
+export function MicErrorGuide({ onRetry }: { onRetry?: () => void }) {
+  const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+
   return (
-    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 text-left max-w-xl mx-auto shadow-sm mt-4">
-      <h4 className="text-slate-900 font-bold mb-3 flex items-center gap-2 text-sm uppercase tracking-wider">
-        <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
-        ¿Cómo solucionar el acceso al micrófono?
+    <div className="bg-[#18181b] border border-amber-500/30 rounded-2xl p-5 text-left max-w-xl mx-auto shadow-2xl mt-4 text-slate-200">
+      <h4 className="text-amber-400 font-bold mb-3 flex items-center gap-2 text-sm uppercase tracking-wider">
+        <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+        ¿Cómo activar el micrófono en tu dispositivo?
       </h4>
       
-      <p className="text-slate-600 text-sm mb-4 leading-relaxed">
-        El tutor requiere acceso al micrófono para escucharte. Debido a que estás visualizando la aplicación dentro de la vista previa de AI Studio (que corre en un marco seguro o <em>iframe</em>), los navegadores web modernos suelen bloquear el micrófono por seguridad.
-      </p>
+      {isIframe ? (
+        <>
+          <p className="text-slate-300 text-xs mb-3 leading-relaxed">
+            Estás visualizando la aplicación dentro del marco de AI Studio (<em>iframe</em>). Los navegadores bloquean el micrófono en marcos seguros.
+          </p>
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 mb-3">
+            <h5 className="font-bold text-xs text-amber-300 mb-1 flex items-center gap-1">
+              <ExternalLink className="w-4 h-4 text-amber-400 shrink-0" />
+              ¡Solución en 1 paso!
+            </h5>
+            <p className="text-slate-200 text-xs leading-relaxed">
+              Haz clic en <strong>"Open in new tab"</strong> (arriba a la derecha de AI Studio) para abrir la app en una pestaña propia sin restricciones.
+            </p>
+          </div>
+        </>
+      ) : (
+        <div className="space-y-2.5 mb-4 text-xs text-slate-300">
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3">
+            <h5 className="font-bold text-xs text-amber-300 mb-1 flex items-center gap-1.5">
+              <span className="bg-amber-400 text-black px-1.5 py-0.2 rounded font-mono text-[10px] font-bold">1</span>
+              Si ves una "X" arriba a la izquierda (Pestaña interna / Custom Tab)
+            </h5>
+            <p className="text-slate-200 leading-relaxed text-[11px]">
+              Toca los <strong>3 puntos verticales (⋮)</strong> arriba a la derecha y pulsa <strong>"Abrir en Chrome"</strong> o <strong>"Abrir en el navegador"</strong>. Los navegadores integrados de apps suelen bloquear el micrófono.
+            </p>
+          </div>
 
-      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 mb-4">
-        <h5 className="font-bold text-xs text-indigo-900 mb-1.5 flex items-center gap-1">
-          <ExternalLink className="w-4 h-4 text-indigo-600 shrink-0" />
-          ¡Solución instantánea en 1 paso!
-        </h5>
-        <p className="text-indigo-950 text-xs leading-relaxed">
-          Haz clic en el botón de la esquina superior derecha de la pantalla de AI Studio: <strong>"Open in new tab" (Abrir en pestaña nueva)</strong> (o el icono con la flechita hacia afuera <ExternalLink className="inline-block w-3 h-3 ml-0.5" />). Al abrir la app en su propia pestaña, el navegador te solicitará el permiso del micrófono de manera normal.
-        </p>
-      </div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <h5 className="font-bold text-xs text-slate-100 mb-1 flex items-center gap-1.5">
+              <span className="bg-white/20 text-slate-200 px-1.5 py-0.2 rounded font-mono text-[10px] font-bold">2</span>
+              Permisos en la barra de Chrome
+            </h5>
+            <p className="text-slate-300 leading-relaxed text-[11px]">
+              Toca el icono de <strong>candado o ajustes</strong> a la izquierda de la dirección web (o en los 3 puntos &gt; <em>Configuración del sitio</em>) y asegúrate de cambiar <strong>Micrófono</strong> a <strong>"Permitir"</strong>.
+            </p>
+          </div>
 
-      <div className="text-xs text-slate-500 leading-relaxed">
-        Una vez que abras la aplicación en una pestaña independiente, vuelve a hacer clic en <strong>"Empezar Cuestionario"</strong> y selecciona <strong>Permitir micrófono</strong> cuando tu navegador te lo solicite.
-      </div>
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <h5 className="font-bold text-xs text-slate-100 mb-1 flex items-center gap-1.5">
+              <span className="bg-white/20 text-slate-200 px-1.5 py-0.2 rounded font-mono text-[10px] font-bold">3</span>
+              Ajustes de Android en tu tablet
+            </h5>
+            <p className="text-slate-300 leading-relaxed text-[11px]">
+              Ve a <strong>Ajustes del sistema &gt; Aplicaciones &gt; Chrome &gt; Permisos &gt; Micrófono</strong> y verifica que tenga seleccionado <strong>"Permitir solo mientras la app está en uso"</strong>.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          type="button"
+          className="w-full mt-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg active:scale-95"
+        >
+          <RefreshCw className="w-4 h-4 shrink-0 animate-spin-slow" />
+          Reintentar activar micrófono ahora
+        </button>
+      )}
     </div>
   );
 }
@@ -4063,6 +4211,7 @@ function StudySession({
   const [isConnecting, setIsConnecting] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string } | null>(null);
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
   
@@ -4075,6 +4224,8 @@ function StudySession({
 
     const startSession = async () => {
       try {
+        setError(null);
+        setIsConnecting(true);
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           micStream.getTracks().forEach(track => track.stop());
@@ -4209,7 +4360,7 @@ function StudySession({
       playerRef.current?.stop();
       sessionRef.current?.then((s: any) => s.close());
     };
-  }, [text, topics, onUnlockTopic, onEnd]);
+  }, [text, topics, onUnlockTopic, onEnd, retryKey]);
 
   return (
     <div className="flex flex-col lg:flex-row gap-12 items-start justify-center min-h-[70vh] p-6">
@@ -4287,7 +4438,7 @@ function StudySession({
             )}
             {(error.toLowerCase().includes("micrófono") || error.toLowerCase().includes("permis") || error.toLowerCase().includes("denied")) && (
               <div className="mt-4 text-white">
-                <MicErrorGuide />
+                <MicErrorGuide onRetry={() => { setError(null); setIsConnecting(true); setRetryKey(k => k + 1); }} />
               </div>
             )}
             <button
@@ -4450,6 +4601,7 @@ function FreeStudySession({
   const [isConnecting, setIsConnecting] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
   
@@ -4462,6 +4614,8 @@ function FreeStudySession({
 
     const startSession = async () => {
       try {
+        setError(null);
+        setIsConnecting(true);
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           micStream.getTracks().forEach(track => track.stop());
@@ -4585,7 +4739,7 @@ function FreeStudySession({
       playerRef.current?.stop();
       sessionRef.current?.then((s: any) => s.close());
     };
-  }, [text, onEnd]);
+  }, [text, onEnd, retryKey]);
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-2xl mx-auto p-6 animate-in fade-in duration-300">
@@ -4600,7 +4754,7 @@ function FreeStudySession({
             )}
             {(error.toLowerCase().includes("micrófono") || error.toLowerCase().includes("permis") || error.toLowerCase().includes("denied")) && (
               <div className="mt-4 text-white">
-                <MicErrorGuide />
+                <MicErrorGuide onRetry={() => { setError(null); setIsConnecting(true); setRetryKey(k => k + 1); }} />
               </div>
             )}
             <button

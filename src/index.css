@@ -51,3 +51,18 @@
   background-size: 40px 40px;
 }
 
+@keyframes scanline {
+  0% { top: 0%; opacity: 0.3; }
+  50% { top: 90%; opacity: 1; }
+  100% { top: 0%; opacity: 0.3; }
+}
+
+@keyframes shimmer {
+  0% { background-position: 0 0; }
+  100% { background-position: 32px 0; }
+}
+
+.animate-scanline {
+  animation: scanline 2.4s ease-in-out infinite;
+}
+

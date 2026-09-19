@@ -29,8 +29,18 @@ dotenv.config();
 resolveGoogleCredentials();
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '150mb' }));
+app.use(express.urlencoded({ limit: '150mb', extended: true }));
+
+// Handle payload too large error gracefully with JSON
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err && (err.type === 'entity.too.large' || err.status === 413)) {
+    return res.status(413).json({
+      error: 'El archivo supera el tamaño máximo permitido (150 MB). Por favor, intenta comprimirlo o dividirlo en partes antes de subirlo.'
+    });
+  }
+  next(err);
+});
 
 const PORT = 3000;
 
@@ -379,12 +389,69 @@ app.post("/api/extract-pdf", async (req, res) => {
       text = result.value || '';
     } else {
       console.log(`[Server PDF Extraction] Procesando archivo PDF para: ${fileName}`);
-      const parser = new PDFParse({ data: new Uint8Array(buffer) });
+      let pdfParseError: string | null = null;
       try {
-        const parsedData = await parser.getText();
-        text = parsedData.text || '';
-      } finally {
-        await parser.destroy();
+        const parser = new PDFParse({ data: new Uint8Array(buffer) });
+        try {
+          const parsedData = await parser.getText();
+          text = parsedData.text || '';
+        } finally {
+          await parser.destroy();
+        }
+      } catch (err: any) {
+        pdfParseError = err.message || String(err);
+        console.warn(`[Server PDF Extraction] PDFParse no pudo leer directamente ${fileName}:`, pdfParseError);
+      }
+
+      // If PDF has no extractable text layer (scanned photocopy/book like Aristotle) or PDFParse errored,
+      // fallback to Gemini OCR vision extraction
+      if (!text || text.trim().length < 50) {
+        console.log(`[Server PDF Extraction] PDF sin capa de texto suficiente (${text?.trim().length || 0} caracteres). Activando OCR inteligente con Gemini para: ${fileName}...`);
+        try {
+          // Check size before sending base64 to Gemini inlineData (Gemini inlineData limit is ~20MB)
+          if (buffer.length <= 22 * 1024 * 1024) {
+            const ai = getAiClient();
+            const ocrPrompt = `Extrae y transcribe todo el texto de este documento PDF de estudio con la máxima fidelidad posible. 
+Si se trata de un libro clásico o filosófico escaneado (como Aristóteles, tratados o apuntes académicos), transcribe con precisión el texto de todas las páginas legibles conservando títulos, capítulos, argumentos y estructura. 
+Devuelve exclusivamente el texto transcrito del documento sin notas editoriales ni introducciones tuyas.`;
+
+            const ocrResponse = await ai.models.generateContent({
+              model: "gemini-2.5-flash",
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: "application/pdf",
+                        data: fileData
+                      }
+                    },
+                    {
+                      text: ocrPrompt
+                    }
+                  ]
+                }
+              ]
+            });
+
+            const ocrExtracted = ocrResponse.text?.trim() || '';
+            if (ocrExtracted.length > 0) {
+              console.log(`[Server PDF Extraction] ¡OCR con Gemini exitoso para ${fileName}! Caracteres extraídos: ${ocrExtracted.length}`);
+              text = ocrExtracted;
+            }
+          } else {
+            console.warn(`[Server PDF Extraction] El archivo ${fileName} supera los 22MB para OCR directo en una sola solicitud.`);
+          }
+        } catch (ocrError: any) {
+          console.error(`[Server PDF Extraction] Falló el intento de OCR con Gemini para ${fileName}:`, ocrError.message || ocrError);
+        }
+      }
+
+      if (!text || text.trim().length === 0) {
+        return res.status(422).json({
+          error: `No se pudo extraer texto del archivo "${fileName}". Es posible que sea un PDF escaneado sin capa de texto seleccionable (imagen pura), esté protegido con contraseña o dañado. Por favor, asegúrate de que el documento tenga texto legible o expórtalo con OCR antes de subirlo.`
+        });
       }
     }
     
@@ -411,7 +478,71 @@ app.post("/api/extract-pdf", async (req, res) => {
     });
   } catch (error: any) {
     console.error("[Server Extraction] Error parsing file on server:", error);
-    res.status(500).json({ error: `No se pudo extraer el texto del archivo en el servidor: ${error.message || error}` });
+    res.status(500).json({ error: `No se pudo procesar el archivo en el servidor: ${error.message || error}` });
+  }
+});
+
+// Endpoint to reliably download Google Drive files server-side avoiding CORS and redirect issues
+app.post("/api/download-drive-file", async (req, res) => {
+  try {
+    const { fileId, accessToken, fileName, mimeType } = req.body;
+    if (!fileId || !accessToken) {
+      return res.status(400).json({ error: "Faltan parámetros obligatorios (fileId o accessToken)" });
+    }
+
+    console.log(`[Server Drive Download] Descargando de Google Drive: ID=${fileId}, Nombre=${fileName || 'desconocido'}`);
+
+    const isGoogleDoc = mimeType === 'application/vnd.google-apps.document';
+    const isGoogleSlides = mimeType === 'application/vnd.google-apps.presentation';
+    const isGoogleSheets = mimeType === 'application/vnd.google-apps.spreadsheet';
+
+    let fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
+    if (isGoogleDoc) {
+      fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+    } else if (isGoogleSlides) {
+      fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+    } else if (isGoogleSheets) {
+      fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/csv`;
+    }
+
+    const driveRes = await fetch(fetchUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    if (!driveRes.ok) {
+      const errBody = await driveRes.text().catch(() => '');
+      console.error(`[Server Drive Download] Error de Drive API (${driveRes.status}):`, errBody);
+      return res.status(driveRes.status).json({
+        error: `Google Drive rechazó la descarga (${driveRes.status}). Puede que el archivo "${fileName}" sea muy grande, esté restringido por permisos o requiera volver a iniciar sesión.`
+      });
+    }
+
+    if (isGoogleDoc || isGoogleSlides || isGoogleSheets) {
+      const text = await driveRes.text();
+      return res.json({
+        success: true,
+        text,
+        fileName: fileName || (isGoogleSheets ? 'hoja_calculo.csv' : 'documento.txt'),
+        isText: true
+      });
+    }
+
+    // Binary file (PDF, Word, TXT, etc.)
+    const arrayBuffer = await driveRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const base64Data = buffer.toString('base64');
+
+    return res.json({
+      success: true,
+      fileData: base64Data,
+      fileName: fileName || 'archivo.pdf',
+      mimeType: mimeType || 'application/pdf',
+      size: buffer.length,
+      isText: false
+    });
+  } catch (error: any) {
+    console.error("[Server Drive Download] Excepción:", error);
+    res.status(500).json({ error: `Error inesperado al descargar de Drive: ${error.message || error}` });
   }
 });
 

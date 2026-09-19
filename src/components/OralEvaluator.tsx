@@ -7,6 +7,7 @@ import {
 import { AudioStreamPlayer, AudioRecorder } from '../lib/audio';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { MicErrorGuide } from './MicErrorGuide';
 
 // Shared types
 export interface OralQuestion {
@@ -626,6 +627,7 @@ export function OralEvaluatorSession({
   const [isConnecting, setIsConnecting] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
   
@@ -645,6 +647,8 @@ export function OralEvaluatorSession({
 
     const startSession = async () => {
       try {
+        setError(null);
+        setIsConnecting(true);
         // Request mic access first
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -839,7 +843,7 @@ export function OralEvaluatorSession({
       playerRef.current?.stop();
       socketSessionRef.current?.then((s: any) => s.close());
     };
-  }, [studyText, session.topicTitle, WebSocketSessionClass]);
+  }, [studyText, session.topicTitle, WebSocketSessionClass, retryKey]);
 
   // Sync active question index with actual progress
   useEffect(() => {
@@ -954,6 +958,11 @@ export function OralEvaluatorSession({
         {error ? (
           <div className="bg-red-950/20 border border-red-900/30 text-red-400 p-6 rounded-2xl w-full text-center">
             <p className="font-semibold mb-4 text-sm">{error}</p>
+            {(error.toLowerCase().includes("micrófono") || error.toLowerCase().includes("permis") || error.toLowerCase().includes("denied")) && (
+              <div className="mt-4 text-white">
+                <MicErrorGuide onRetry={() => { setError(null); setIsConnecting(true); setRetryKey(k => k + 1); }} />
+              </div>
+            )}
             <button
               onClick={onEnd}
               className="mt-4 bg-red-950/40 hover:bg-red-900/40 text-red-200 border border-red-900/30 px-5 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer"

@@ -1,3 +1,5 @@
+import { getAccessToken } from './firebase';
+
 export async function extractTextFromPDF(file: File): Promise<string> {
   // Check if file is empty or 0 bytes (common with unsynced Google Drive files or Google Docs shortcuts)
   if (file.size === 0) {
@@ -55,8 +57,6 @@ export async function extractTextFromPDF(file: File): Promise<string> {
   }
   return data.text || '';
 }
-
-import { getAccessToken } from './firebase';
 
 export async function importGoogleDocFromUrl(url: string): Promise<{ text: string; title: string }> {
   if (!url || !url.trim()) {

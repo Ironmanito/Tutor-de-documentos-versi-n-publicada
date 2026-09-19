@@ -64,58 +64,50 @@ export async function importDriveFile(
 ): Promise<{ text: string; fileName: string }> {
   const { id, name, mimeType } = file;
 
-  // 1. Google Docs
-  if (mimeType === 'application/vnd.google-apps.document') {
-    const exportUrl = `https://www.googleapis.com/drive/v3/files/${id}/export?mimeType=text/plain`;
-    const res = await fetch(exportUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) {
-      throw new Error(`No se pudo exportar el Google Doc "${name}". (${res.status})`);
-    }
-    const text = await res.text();
-    return { text, fileName: name.endsWith('.txt') ? name : `${name}.txt` };
-  }
-
-  // 2. Google Presentations (Slides)
-  if (mimeType === 'application/vnd.google-apps.presentation') {
-    const exportUrl = `https://www.googleapis.com/drive/v3/files/${id}/export?mimeType=text/plain`;
-    const res = await fetch(exportUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) {
-      throw new Error(`No se pudo exportar la presentación "${name}". (${res.status})`);
-    }
-    const text = await res.text();
-    return { text, fileName: `${name}.txt` };
-  }
-
-  // 3. Google Spreadsheets (Sheets)
-  if (mimeType === 'application/vnd.google-apps.spreadsheet') {
-    const exportUrl = `https://www.googleapis.com/drive/v3/files/${id}/export?mimeType=text/csv`;
-    const res = await fetch(exportUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) {
-      throw new Error(`No se pudo exportar la hoja de cálculo "${name}". (${res.status})`);
-    }
-    const text = await res.text();
-    return { text, fileName: `${name}.csv` };
-  }
-
-  // 4. Binary files (PDF, Word, TXT, CSV, etc.) stored in Drive
-  const downloadUrl = `https://www.googleapis.com/drive/v3/files/${id}?alt=media`;
-  const res = await fetch(downloadUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  // Call the server-side download endpoint which bypasses CORS, handles Google Workspace formats, and retrieves binaries cleanly
+  const res = await fetch("/api/download-drive-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileId: id,
+      accessToken,
+      fileName: name,
+      mimeType
+    })
   });
 
   if (!res.ok) {
-    throw new Error(`Error al descargar el archivo "${name}" de Google Drive (${res.status})`);
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `Error al descargar el archivo "${name}" de Google Drive (${res.status})`);
   }
 
-  const blob = await res.blob();
-  const fileObj = new File([blob], name, { type: blob.type || mimeType });
-  const text = await extractTextFromFile(fileObj);
+  const data = await res.json();
+  if (data.isText) {
+    return {
+      text: data.text || '',
+      fileName: data.fileName || `${name}.txt`
+    };
+  }
 
-  return { text, fileName: name };
+  // If binary (PDF, Word, etc.), send base64 data to /api/extract-pdf
+  const extractRes = await fetch("/api/extract-pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileName: data.fileName,
+      fileData: data.fileData,
+      mimeType: data.mimeType
+    })
+  });
+
+  if (!extractRes.ok) {
+    const errData = await extractRes.json().catch(() => ({}));
+    throw new Error(errData.error || `Error al procesar el archivo "${name}" (${extractRes.status})`);
+  }
+
+  const extractData = await extractRes.json();
+  return {
+    text: extractData.text || '',
+    fileName: name
+  };
 }
