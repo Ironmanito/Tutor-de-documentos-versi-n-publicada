@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Geist+Mono:wght@400;700&family=Geist:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Syne", sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+  --color-bg-systematic: #0e0e0e;
+  --color-ink: #ffffff;
+  --color-accent-systematic: #ff4d00;
+  --color-panel-systematic: #161616;
+  --color-ink-muted: rgba(255, 255, 255, 0.4);
+  --color-ink-faint: rgba(255, 255, 255, 0.05);
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-wave-1 {
+  animation: wave 1.2s ease-in-out infinite;
+}
+.animate-wave-2 {
+  animation: wave 1.5s ease-in-out infinite 0.2s;
+}
+.animate-wave-3 {
+  animation: wave 1.3s ease-in-out infinite 0.4s;
+}
+.animate-wave-4 {
+  animation: wave 1.6s ease-in-out infinite 0.1s;
+}
+.animate-wave-5 {
+  animation: wave 1.4s ease-in-out infinite 0.3s;
+}
+
+/* Background grid styling matching Design HTML */
+.grid-bg {
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+

@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile in the application",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["free", "pro"]
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": ["email", "tier"]
+    },
+    "Study": {
+      "title": "Study",
+      "description": "Study notebook containing extracted materials, summaries, and exam sessions",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "studyText": {
+          "type": "string",
+          "maxLength": 500000
+        },
+        "activeFileNames": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "gcsUri": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "required": ["title", "userId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile document"
+    },
+    "/users/{userId}/studies/{studyId}": {
+      "schema": "Study",
+      "description": "User study notebooks and exam sessions"
+    }
+  }
+}

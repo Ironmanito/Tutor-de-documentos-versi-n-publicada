@@ -1,0 +1,10 @@
+{
+  "name": "Tutor de Cuaderno y Documentos",
+  "description": "Estudia tus documentos y PDFs de forma interactiva con un tutor de IA por voz en tiempo real y cuestionarios dinámicos.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
