@@ -628,10 +628,23 @@ export default function App() {
         const name = res.user.displayName || email.split('@')[0];
         handleIdentifyUser(email, name);
         setShowAuthModal(false);
+        showToast('success', 'Sesión iniciada', `Bienvenido, ${name}`);
       }
     } catch (err: any) {
       console.error("Error en inicio de sesión con Google:", err);
-      alert(err.message || "No se pudo conectar con Google.");
+      const code = err?.code || '';
+      if (code === 'auth/unauthorized-domain') {
+        showToast(
+          'error',
+          'Dominio no autorizado en Firebase',
+          'Para habilitar Google Sign-In en Render, añade tu dominio de Render en Firebase Console > Authentication > Settings > Authorized Domains. Puedes identificarte ingresando tu correo abajo.'
+        );
+        setShowAuthModal(true);
+      } else if (code === 'auth/popup-closed-by-user') {
+        showToast('info', 'Ventana cerrada', 'Se cerró la ventana de autenticación de Google.');
+      } else {
+        showToast('error', 'Error al autenticar', err.message || 'No se pudo conectar con Google.');
+      }
     } finally {
       setIsGoogleAuthenticating(false);
     }
@@ -1393,19 +1406,9 @@ export default function App() {
                   setShowAuthModal(true);
                   setShowMobileSidebar(false);
                 }}
-                className="w-full text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-mono uppercase tracking-widest font-bold transition-all duration-200 cursor-pointer border-none rounded"
+                className="w-full text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-mono uppercase tracking-widest font-bold transition-all duration-200 cursor-pointer border-none rounded shadow-sm"
               >
                 Ingresar / Registrarme
-              </button>
-              <button
-                onClick={() => {
-                  handleIdentifyUser('martinvelozz01@gmail.com', 'Martín Veloz');
-                  setShowMobileSidebar(false);
-                }}
-                className="w-full mt-1.5 text-center py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[8px] font-mono uppercase tracking-wider font-bold transition-all duration-200 cursor-pointer rounded"
-                title="Cargar historial de martinvelozz01@gmail.com"
-              >
-                Cargar como Martín
               </button>
             </>
           )}
@@ -2065,13 +2068,13 @@ export default function App() {
                         </p>
                       </div>
 
-                      <div className="w-full flex flex-col gap-1.5 pt-1">
+                      <div className="w-full flex flex-col gap-2 pt-1">
                         <button
                           onClick={handleGoogleAuthLogin}
                           disabled={isGoogleAuthenticating}
-                          className="w-full py-1.5 px-3 bg-white text-black hover:bg-zinc-200 font-sans font-bold text-[9px] rounded flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all"
+                          className="w-full py-2 px-3 bg-white text-black hover:bg-zinc-200 font-sans font-bold text-[9.5px] rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all"
                         >
-                          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24">
+                          <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
                             <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                             <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
                             <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
@@ -2081,22 +2084,14 @@ export default function App() {
                         </button>
 
                         <button
-                          onClick={() => handleIdentifyUser('martinvelozz01@gmail.com', 'Martín Veloz')}
-                          className="w-full py-1.5 px-3 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 font-mono text-[8px] uppercase font-bold rounded cursor-pointer transition-all"
-                          title="Cargar historial de martinvelozz01@gmail.com"
-                        >
-                          Cargar como Martín
-                        </button>
-
-                        <button
                           onClick={() => {
                             setTempEmailInput('');
                             setTempNameInput('');
                             setShowAuthModal(true);
                           }}
-                          className="text-[9px] text-ink-muted hover:text-white underline font-mono cursor-pointer bg-transparent border-none"
+                          className="w-full py-1.5 px-3 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-mono text-[8.5px] uppercase font-bold rounded-lg cursor-pointer transition-all text-center"
                         >
-                          O ingresar otro correo
+                          Identificarme con Correo
                         </button>
                       </div>
                     </div>
@@ -3386,7 +3381,7 @@ app.post('/api/create-checkout', async (req, res) => {
                     <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Nombre Completo</label>
                     <input
                       type="text"
-                      placeholder="Ej. Martin Veloz"
+                      placeholder="Ej. Juan Pérez"
                       value={tempNameInput}
                       onChange={(e) => setTempNameInput(e.target.value)}
                       className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
@@ -3396,7 +3391,7 @@ app.post('/api/create-checkout', async (req, res) => {
                     <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Correo Electrónico</label>
                     <input
                       type="email"
-                      placeholder="martinvelozz01@gmail.com"
+                      placeholder="tu-correo@ejemplo.com"
                       value={tempEmailInput}
                       onChange={(e) => setTempEmailInput(e.target.value)}
                       onKeyDown={(e) => {

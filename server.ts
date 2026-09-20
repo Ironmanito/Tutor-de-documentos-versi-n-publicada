@@ -58,7 +58,7 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 const USER_DB_PATH = path.join(process.cwd(), "user_studies_db.json");
 
