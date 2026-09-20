@@ -21,6 +21,12 @@ import {
   resolveGoogleCredentials,
   resetStorageClient
 } from "./server/storage.ts";
+import {
+  extractTextFromPPTX,
+  extractTextFromPPT,
+  extractTextFromImage,
+  extractTextFromScannedPDF
+} from "./server/office.ts";
 
 // ES Module compatibility for third-party CommonJS packages
 const mammoth = ((mammothModule as any).default || mammothModule) as any;
@@ -32,14 +38,24 @@ const app = express();
 app.use(express.json({ limit: '150mb' }));
 app.use(express.urlencoded({ limit: '150mb', extended: true }));
 
-// Handle payload too large error gracefully with JSON
+// Handle body-parser errors (payload too large, malformed JSON, truncated stream) gracefully with JSON
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (err && (err.type === 'entity.too.large' || err.status === 413)) {
-    return res.status(413).json({
-      error: 'El archivo supera el tamaño máximo permitido (150 MB). Por favor, intenta comprimirlo o dividirlo en partes antes de subirlo.'
-    });
+  if (err) {
+    console.error("[Express BodyParser Error]:", err.message || err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    const status = err.status || err.statusCode || (err.type === 'entity.too.large' ? 413 : 400);
+    const message = (err.type === 'entity.too.large' || status === 413)
+      ? 'El archivo supera el tamaño máximo permitido (150 MB). Por favor, intenta comprimirlo o dividirlo en partes antes de subirlo.'
+      : (err.message || 'Error en el formato de la solicitud enviada al servidor.');
+    return res.status(status).json({ error: message, code: err.type || 'BAD_REQUEST' });
   }
-  next(err);
+  next();
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
 });
 
 const PORT = 3000;
@@ -287,7 +303,7 @@ function getAiClient(customKey?: string): GoogleGenAI {
 
 console.log("Lazy initialization helper for Gemini API defined. Initial key present in process.env:", !!process.env.GEMINI_API_KEY);
 
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4, baseDelayMs = 1500): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, baseDelayMs = 1000): Promise<T> {
   let lastError: any;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -297,9 +313,31 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4, baseDelayMs =
       const status = err?.status ?? err?.response?.status;
       const isRetryable = status === 503 || status === 429 || status === 500;
       if (!isRetryable || attempt === maxAttempts) throw err;
-      const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500;
+      const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 400;
       console.warn(`[Retry] Intento ${attempt}/${maxAttempts} fallido (${status}). Reintentando en ${Math.round(delay)}ms...`);
       await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
+
+const GEMINI_TEXT_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+
+async function generateContentWithFallback(
+  ai: GoogleGenAI,
+  params: { contents: any; config?: any },
+  models: string[] = GEMINI_TEXT_MODELS
+) {
+  let lastError: any = null;
+  for (const model of models) {
+    try {
+      return await withRetry(() => ai.models.generateContent({
+        ...params,
+        model
+      }), 2, 800);
+    } catch (err: any) {
+      console.warn(`[Gemini Model Fallback] Modelo ${model} devolvió error (${err?.status || err?.code || err?.message}). Probando siguiente modelo...`);
+      lastError = err;
     }
   }
   throw lastError;
@@ -367,28 +405,49 @@ app.post("/api/upload", async (req, res) => {
 
 app.post("/api/extract-pdf", async (req, res) => {
   try {
-    const { fileData, fileName, mimeType } = req.body;
+    const { fileData, fileName, mimeType, apiKey } = req.body;
     if (!fileData) {
       return res.status(400).json({ error: "Falta el contenido del archivo (fileData)" });
     }
 
-    console.log(`[Server File Extraction] Recibida solicitud para extraer texto de: ${fileName || 'documento'}`);
+    const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey || undefined;
+    const cleanFileName = fileName || 'documento';
+    const lowerName = cleanFileName.toLowerCase();
+    console.log(`[Server File Extraction] Solicitud para procesar: ${cleanFileName} (${mimeType || 'sin tipo MIME'})`);
     const buffer = Buffer.from(fileData, 'base64');
     let text = '';
 
-    const isWord = fileName && (fileName.toLowerCase().endsWith('.docx') || fileName.toLowerCase().endsWith('.doc'));
+    const isWord = lowerName.endsWith('.docx') || lowerName.endsWith('.doc') || 
+                   mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+                   mimeType === 'application/msword';
+    const isPPTX = lowerName.endsWith('.pptx') || 
+                   mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    const isPPT = lowerName.endsWith('.ppt') || 
+                  mimeType === 'application/vnd.ms-powerpoint';
+    const isImage = (mimeType && mimeType.startsWith('image/')) || 
+                    /\.(png|jpe?g|webp|bmp|tiff?|gif|heic)$/i.test(lowerName);
 
     if (isWord) {
-      if (fileName.toLowerCase().endsWith('.doc')) {
+      if (lowerName.endsWith('.doc') && !lowerName.endsWith('.docx')) {
         return res.status(400).json({ 
           error: "El formato de Word antiguo (.doc) no está soportado directamente. Por favor, vuelve a guardar tu archivo en Word como formato moderno (.docx) o expórtalo a PDF para poder subirlo." 
         });
       }
-      console.log(`[Server Word Extraction] Procesando archivo .docx con Mammoth para: ${fileName}`);
+      console.log(`[Server Word Extraction] Procesando archivo .docx con Mammoth para: ${cleanFileName}`);
       const result = await mammoth.extractRawText({ buffer: buffer });
       text = result.value || '';
+    } else if (isPPTX) {
+      console.log(`[Server PowerPoint Extraction] Procesando presentación moderna .pptx para: ${cleanFileName}`);
+      text = await extractTextFromPPTX(buffer);
+    } else if (isPPT) {
+      console.log(`[Server PowerPoint Extraction] Procesando presentación .ppt para: ${cleanFileName}`);
+      text = await extractTextFromPPT(buffer);
+    } else if (isImage) {
+      console.log(`[Server Image Extraction] Procesando imagen o foto de apunte para: ${cleanFileName}`);
+      const ai = getAiClient(customApiKey);
+      text = await extractTextFromImage(ai, buffer, mimeType || 'image/jpeg', cleanFileName);
     } else {
-      console.log(`[Server PDF Extraction] Procesando archivo PDF para: ${fileName}`);
+      console.log(`[Server PDF Extraction] Procesando archivo PDF para: ${cleanFileName}`);
       let pdfParseError: string | null = null;
       try {
         const parser = new PDFParse({ data: new Uint8Array(buffer) });
@@ -400,68 +459,54 @@ app.post("/api/extract-pdf", async (req, res) => {
         }
       } catch (err: any) {
         pdfParseError = err.message || String(err);
-        console.warn(`[Server PDF Extraction] PDFParse no pudo leer directamente ${fileName}:`, pdfParseError);
+        console.warn(`[Server PDF Extraction] PDFParse no pudo leer directamente ${cleanFileName}:`, pdfParseError);
       }
+
+      // Calculate substantive text (excluding page number headers like "-- 1 of 16 --")
+      const substantiveText = text.replace(/--\s*\d+\s+of\s+\d+\s*--/gi, '').replace(/[\s\r\n\t]+/g, ' ').trim();
+      const needsOcr = !text || substantiveText.length < 50;
 
       // If PDF has no extractable text layer (scanned photocopy/book like Aristotle) or PDFParse errored,
-      // fallback to Gemini OCR vision extraction
-      if (!text || text.trim().length < 50) {
-        console.log(`[Server PDF Extraction] PDF sin capa de texto suficiente (${text?.trim().length || 0} caracteres). Activando OCR inteligente con Gemini para: ${fileName}...`);
+      // fallback to high-fidelity Gemini OCR vision extraction
+      if (needsOcr) {
+        console.log(`[Server PDF Extraction] PDF sin capa de texto sustantiva (${substantiveText.length} caracteres). Activando OCR inteligente de Gemini 3.8 Flash para: ${cleanFileName}...`);
         try {
-          // Check size before sending base64 to Gemini inlineData (Gemini inlineData limit is ~20MB)
-          if (buffer.length <= 22 * 1024 * 1024) {
-            const ai = getAiClient();
-            const ocrPrompt = `Extrae y transcribe todo el texto de este documento PDF de estudio con la máxima fidelidad posible. 
-Si se trata de un libro clásico o filosófico escaneado (como Aristóteles, tratados o apuntes académicos), transcribe con precisión el texto de todas las páginas legibles conservando títulos, capítulos, argumentos y estructura. 
-Devuelve exclusivamente el texto transcrito del documento sin notas editoriales ni introducciones tuyas.`;
-
-            const ocrResponse = await ai.models.generateContent({
-              model: "gemini-2.5-flash",
-              contents: [
-                {
-                  role: "user",
-                  parts: [
-                    {
-                      inlineData: {
-                        mimeType: "application/pdf",
-                        data: fileData
-                      }
-                    },
-                    {
-                      text: ocrPrompt
-                    }
-                  ]
-                }
-              ]
-            });
-
-            const ocrExtracted = ocrResponse.text?.trim() || '';
-            if (ocrExtracted.length > 0) {
-              console.log(`[Server PDF Extraction] ¡OCR con Gemini exitoso para ${fileName}! Caracteres extraídos: ${ocrExtracted.length}`);
-              text = ocrExtracted;
-            }
-          } else {
-            console.warn(`[Server PDF Extraction] El archivo ${fileName} supera los 22MB para OCR directo en una sola solicitud.`);
-          }
+          const ai = getAiClient(customApiKey);
+          text = await extractTextFromScannedPDF(ai, buffer, fileData, cleanFileName);
         } catch (ocrError: any) {
-          console.error(`[Server PDF Extraction] Falló el intento de OCR con Gemini para ${fileName}:`, ocrError.message || ocrError);
+          console.error(`[Server PDF Extraction] Falló el intento de OCR con Gemini para ${cleanFileName}:`, ocrError);
+          return res.status(422).json({
+            error: `No se pudo extraer texto del archivo escaneado "${cleanFileName}". Detalle: ${ocrError.message || ocrError}`,
+            isScanned: true,
+            ocrAttempted: true,
+            ocrFailedReason: ocrError.message || String(ocrError)
+          });
         }
       }
-
-      if (!text || text.trim().length === 0) {
-        return res.status(422).json({
-          error: `No se pudo extraer texto del archivo "${fileName}". Es posible que sea un PDF escaneado sin capa de texto seleccionable (imagen pura), esté protegido con contraseña o dañado. Por favor, asegúrate de que el documento tenga texto legible o expórtalo con OCR antes de subirlo.`
-        });
-      }
     }
-    
+
+    // Final validation of extracted text
+    const finalSubstantive = text.replace(/--\s*\d+\s+of\s+\d+\s*--/gi, '').replace(/[\s\r\n\t]+/g, ' ').trim();
+    if (!text || finalSubstantive.length === 0) {
+      return res.status(422).json({
+        error: `No se pudo extraer texto legible del archivo "${cleanFileName}". Por favor verifica que el archivo no esté en blanco o dañado.`,
+        isScanned: true
+      });
+    }
+
     // Asynchronously send the original document to Google Cloud Storage (replaces local fs.writeFile)
     let gcsResult: any = null;
     try {
       const fileMime = mimeType || (isWord 
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
+        : isPPTX 
+        ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        : isPPT
+        ? 'application/vnd.ms-powerpoint'
+        : isImage
+        ? 'image/jpeg'
         : 'application/pdf');
-      gcsResult = await uploadFileToGCS(fileName || 'documento', buffer, fileMime);
+      gcsResult = await uploadFileToGCS(cleanFileName, buffer, fileMime);
       if (gcsResult.success) {
         console.log(`[Server Extraction] Documento respaldado en Google Cloud Storage: ${gcsResult.gcsUri}`);
       }
@@ -469,7 +514,7 @@ Devuelve exclusivamente el texto transcrito del documento sin notas editoriales 
       console.warn("[Server Extraction] Advertencia al respaldar en GCS:", gcsErr.message || gcsErr);
     }
 
-    console.log(`[Server Extraction] Extracción exitosa de: ${fileName || 'documento'}. Caracteres extraídos: ${text.length}`);
+    console.log(`[Server Extraction] Extracción exitosa de: ${cleanFileName}. Caracteres extraídos: ${text.length}`);
     res.json({ 
       text,
       gcsUri: gcsResult?.gcsUri,
@@ -490,19 +535,45 @@ app.post("/api/download-drive-file", async (req, res) => {
       return res.status(400).json({ error: "Faltan parámetros obligatorios (fileId o accessToken)" });
     }
 
-    console.log(`[Server Drive Download] Descargando de Google Drive: ID=${fileId}, Nombre=${fileName || 'desconocido'}`);
+    console.log(`[Server Drive Download] Descargando de Google Drive: ID=${fileId}, Nombre=${fileName || 'desconocido'}, MIME=${mimeType || 'no especificado'}`);
 
-    const isGoogleDoc = mimeType === 'application/vnd.google-apps.document';
-    const isGoogleSlides = mimeType === 'application/vnd.google-apps.presentation';
-    const isGoogleSheets = mimeType === 'application/vnd.google-apps.spreadsheet';
+    let targetFileId = fileId;
+    let targetMimeType = mimeType;
+    let targetFileName = fileName;
 
-    let fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
+    // Check if shortcut or if mimeType is undefined, resolve metadata from Google Drive
+    if (!targetMimeType || targetMimeType === 'application/vnd.google-apps.shortcut') {
+      try {
+        const metaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,shortcutDetails,size&supportsAllDrives=true`, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (metaRes.ok) {
+          const meta = await metaRes.json();
+          if (meta.shortcutDetails?.targetId) {
+            targetFileId = meta.shortcutDetails.targetId;
+            targetMimeType = meta.shortcutDetails.targetMimeType || targetMimeType;
+            console.log(`[Server Drive Download] Acceso directo resuelto a targetId=${targetFileId}, targetMimeType=${targetMimeType}`);
+          } else if (meta.mimeType) {
+            targetMimeType = meta.mimeType;
+          }
+          if (meta.name && !targetFileName) targetFileName = meta.name;
+        }
+      } catch (metaErr) {
+        console.warn("[Server Drive Download] Error obteniendo metadatos del archivo:", metaErr);
+      }
+    }
+
+    const isGoogleDoc = targetMimeType === 'application/vnd.google-apps.document';
+    const isGoogleSlides = targetMimeType === 'application/vnd.google-apps.presentation';
+    const isGoogleSheets = targetMimeType === 'application/vnd.google-apps.spreadsheet';
+
+    let fetchUrl = `https://www.googleapis.com/drive/v3/files/${targetFileId}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true`;
     if (isGoogleDoc) {
-      fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+      fetchUrl = `https://www.googleapis.com/drive/v3/files/${targetFileId}/export?mimeType=text/plain`;
     } else if (isGoogleSlides) {
-      fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+      fetchUrl = `https://www.googleapis.com/drive/v3/files/${targetFileId}/export?mimeType=text/plain`;
     } else if (isGoogleSheets) {
-      fetchUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/csv`;
+      fetchUrl = `https://www.googleapis.com/drive/v3/files/${targetFileId}/export?mimeType=text/csv`;
     }
 
     const driveRes = await fetch(fetchUrl, {
@@ -512,9 +583,17 @@ app.post("/api/download-drive-file", async (req, res) => {
     if (!driveRes.ok) {
       const errBody = await driveRes.text().catch(() => '');
       console.error(`[Server Drive Download] Error de Drive API (${driveRes.status}):`, errBody);
-      return res.status(driveRes.status).json({
-        error: `Google Drive rechazó la descarga (${driveRes.status}). Puede que el archivo "${fileName}" sea muy grande, esté restringido por permisos o requiera volver a iniciar sesión.`
-      });
+      let userFriendlyMessage = `Google Drive rechazó la descarga (${driveRes.status}).`;
+      if (driveRes.status === 401) {
+        userFriendlyMessage = `Tu sesión con Google Drive ha expirado. Por favor, vuelve a conectar tu cuenta de Google Drive para renovar el permiso de acceso.`;
+      } else if (driveRes.status === 403) {
+        userFriendlyMessage = `No tienes permisos suficientes para descargar "${targetFileName || 'el archivo'}" directamente desde Google Drive o el propietario restringió la descarga de copias.`;
+      } else if (driveRes.status === 404) {
+        userFriendlyMessage = `El archivo "${targetFileName || 'solicitado'}" no fue encontrado en Google Drive o fue eliminado de la papelera.`;
+      } else {
+        userFriendlyMessage = `No se pudo descargar "${targetFileName || 'el archivo'}" de Drive (${driveRes.status}). Puede ser un archivo muy grande o con restricciones de la organización.`;
+      }
+      return res.status(driveRes.status).json({ error: userFriendlyMessage });
     }
 
     if (isGoogleDoc || isGoogleSlides || isGoogleSheets) {
@@ -522,7 +601,7 @@ app.post("/api/download-drive-file", async (req, res) => {
       return res.json({
         success: true,
         text,
-        fileName: fileName || (isGoogleSheets ? 'hoja_calculo.csv' : 'documento.txt'),
+        fileName: targetFileName || (isGoogleSheets ? 'hoja_calculo.csv' : 'documento.txt'),
         isText: true
       });
     }
@@ -535,8 +614,8 @@ app.post("/api/download-drive-file", async (req, res) => {
     return res.json({
       success: true,
       fileData: base64Data,
-      fileName: fileName || 'archivo.pdf',
-      mimeType: mimeType || 'application/pdf',
+      fileName: targetFileName || 'archivo.pdf',
+      mimeType: targetMimeType || 'application/pdf',
       size: buffer.length,
       isText: false
     });
@@ -1158,8 +1237,7 @@ app.post("/api/generate-topics", async (req, res) => {
   // Try using real Gemini API first
   try {
     const ai = getAiClient(customKey);
-    const response = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await generateContentWithFallback(ai, {
       contents: `Extrae de forma limpia los temas principales ACADÉMICOS SUSTANTIVOS del siguiente texto de estudio para crear un plan de estudio. Devuelve una lista de 3 a 5 temas verdaderos basados estrictamente en la materia.
 
 REGLA CRÍTICA SOBRE ENCABEZADOS Y PORTADAS:
@@ -1186,7 +1264,7 @@ ${cleanText.substring(0, 50000)}`,
           }
         }
       }
-    }));
+    });
 
     const cleanResult = cleanJsonText(response.text || '');
     return res.json({ text: cleanResult });
@@ -1214,8 +1292,7 @@ app.post("/api/generate-oral-topics", async (req, res) => {
       ? `\n\nEXCLUSIÓN OBLIGATORIA DE TEMAS PREVIOS: El usuario ya tiene los siguientes temas: [${excludeList.join(', ')}].\nEs un REQUISITO ESTRICTO que generes 4 temas Y preguntas TOTALMENTE NUEVOS Y DIFERENTES, explorando otras secciones, definiciones, teorías o ejemplos del texto. Semilla de variación: ${randomSeed}.`
       : `\n\nSemilla de variación aleatoria: ${randomSeed}.`;
 
-    const response = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await generateContentWithFallback(ai, {
       contents: `Analiza minuciosamente el contenido académico sustantivo del siguiente documento de estudio e identifica sus distintas unidades, capítulos, módulos o ramas temáticas independientes.
 
 REGLAS ESTRUCTURALES Y DE CONTENIDO OBLIGATORIAS:
@@ -1257,7 +1334,7 @@ ${cleanText.substring(0, 50000)}`,
           }
         }
       }
-    }));
+    });
 
     const cleanResult = cleanJsonText(response.text || '');
     return res.json({ text: cleanResult });
@@ -1280,8 +1357,7 @@ app.post("/api/generate-quiz", async (req, res) => {
   // Try using real Gemini API first
   try {
     const ai = getAiClient(customKey);
-    const response = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await generateContentWithFallback(ai, {
       contents: `Actúa como un profesor experto. Genera un cuestionario de opción múltiple exhaustivo y súper específico basado strictly en el contenido académico sustantivo del texto proporcionado.
 
 REGLAS OBLIGATORIAS:
@@ -1311,7 +1387,7 @@ ${cleanText.substring(0, 50000)}`,
           }
         }
       }
-    }));
+    });
 
     const cleanResult = cleanJsonText(response.text || '');
     return res.json({ text: cleanResult });
@@ -1584,6 +1660,26 @@ ${cleanText ? cleanText.substring(0, 50000) : ''}
       liveSession = null;
     }
   });
+});
+
+// Ensure any unhandled /api/* route returns JSON 404, never falling through to Vite SPA index.html
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `Ruta de API no encontrada: ${req.method} ${req.originalUrl || req.path}` });
+});
+
+// Global API error handler ensuring all errors on API routes return clean JSON
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/api') || (req.originalUrl && req.originalUrl.startsWith('/api'))) {
+    console.error("[API Global Error]:", err);
+    if (!res.headersSent) {
+      const status = err.status || err.statusCode || 500;
+      return res.status(status).json({
+        error: err.message || 'Error interno del servidor al procesar la solicitud.',
+        code: err.code || err.type || 'INTERNAL_ERROR'
+      });
+    }
+  }
+  next(err);
 });
 
 async function startViteDevServer() {

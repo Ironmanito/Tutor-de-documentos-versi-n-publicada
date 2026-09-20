@@ -85,7 +85,7 @@ export function getBucketName(): string | null {
     process.env.GCS_BUCKET_NAME ||
     process.env.GOOGLE_CLOUD_STORAGE_BUCKET ||
     process.env.STORAGE_BUCKET ||
-    null
+    "nice-coral-g4dh4.firebasestorage.app"
   );
 }
 

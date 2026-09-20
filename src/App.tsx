@@ -1,11 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut, MessageSquareHeart, Users } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut, MessageSquareHeart, Users, AlertCircle, Info, X } from 'lucide-react';
 import { extractTextFromFile, importGoogleDocFromUrl } from './lib/pdf';
 import { AudioStreamPlayer, AudioRecorder } from './lib/audio';
 import { cn } from './lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { OralEvaluatorSetup, OralEvaluatorSession, OralExamSession, SuggestedOralTopic } from './components/OralEvaluator';
-import { googleSignIn, initAuth, logoutGoogle, setCachedAccessToken } from './lib/firebase';
+import { googleSignIn, initAuth, logoutGoogle, setCachedAccessToken, auth } from './lib/firebase';
+import { saveStudyNotebook, loadUserNotebooks, deleteStudyNotebook, SavedStudyRecord } from './lib/studyStorage';
 import { listDriveFiles, importDriveFile, DriveFile } from './lib/drive';
 import { User } from 'firebase/auth';
 import { AppLogo } from './components/AppLogo';
@@ -154,6 +155,23 @@ export default function App() {
   const [activeOralSession, setActiveOralSession] = useState<OralExamSession | null>(null);
   const [studyToDelete, setStudyToDelete] = useState<{ id: string; title: string } | null>(null);
 
+  // Extraction Cancellation and AbortController Reference
+  const extractionAbortControllerRef = useRef<AbortController | null>(null);
+
+  const cancelExtraction = useCallback(() => {
+    if (extractionAbortControllerRef.current) {
+      try {
+        extractionAbortControllerRef.current.abort();
+      } catch (_) {}
+      extractionAbortControllerRef.current = null;
+    }
+    setIsExtracting(false);
+    setExtractProgress(0);
+    setCurrentExtractingFile('');
+    setExtractingFileIndex(1);
+    showToast('info', 'Carga cancelada', 'Se detuvo el procesamiento del documento.');
+  }, []);
+
   // Google Docs / Drive Import State
   const [showGoogleDocModal, setShowGoogleDocModal] = useState(false);
   const [googleDocUrl, setGoogleDocUrl] = useState('');
@@ -172,18 +190,48 @@ export default function App() {
   const [isLoadingDriveFiles, setIsLoadingDriveFiles] = useState(false);
   const [selectedDriveFileIds, setSelectedDriveFileIds] = useState<string[]>([]);
   const [isImportingDriveFiles, setIsImportingDriveFiles] = useState(false);
+  const [driveImportStatusText, setDriveImportStatusText] = useState<string>('');
+  const [driveImportErrorDetails, setDriveImportErrorDetails] = useState<string | null>(null);
+
+  // Sistema de Avisos en Pantalla (Toast Notifications) - Inmune a bloqueos de alert() en iframe
+  const [toasts, setToasts] = useState<{ id: string; type: 'success' | 'error' | 'warning' | 'info'; title: string; message: string }[]>([]);
+
+  const showToast = useCallback((type: 'success' | 'error' | 'warning' | 'info', title: string, message: string) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    setToasts(prev => [...prev.slice(-3), { id, type, title, message }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 7000);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
 
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
         setDriveUser(user);
-        setDriveAccessToken(token);
-        setCachedAccessToken(token);
+        if (token) {
+          setDriveAccessToken(token);
+          setCachedAccessToken(token);
+        }
+        if (user.email) {
+          const name = user.displayName || user.email.split('@')[0];
+          setUserEmail(user.email);
+          setUserDisplayName(name);
+          localStorage.setItem('user_email', user.email);
+          localStorage.setItem('user_display_name', name);
+          fetchUserHistory(user.email, user.uid);
+        }
       },
       () => {
-        setDriveUser(null);
         setDriveAccessToken(null);
         setCachedAccessToken(null);
+        const storedEmail = localStorage.getItem('user_email');
+        if (storedEmail) {
+          fetchUserHistory(storedEmail);
+        }
       }
     );
     return () => unsubscribe();
@@ -339,36 +387,17 @@ export default function App() {
   const [newStudyTitle, setNewStudyTitle] = useState('');
   const [tempEmailInput, setTempEmailInput] = useState('');
   const [tempNameInput, setTempNameInput] = useState('');
-  const [isSimulatingGoogle, setIsSimulatingGoogle] = useState(false);
-  const [googleSimStep, setGoogleSimStep] = useState<'idle' | 'selecting' | 'authenticating' | 'success'>('idle');
-  const [googleSimEmail, setGoogleSimEmail] = useState('martinvelozz01@gmail.com');
-  const [googleSimName, setGoogleSimName] = useState('Martin Veloz');
+  const [isGoogleAuthenticating, setIsGoogleAuthenticating] = useState(false);
+  const [isCloudSynced, setIsCloudSynced] = useState(false);
+  const [isSavingStudy, setIsSavingStudy] = useState(false);
 
+  // Carga inicial de cuadernos y persistencia universal
   useEffect(() => {
-    if (!showAuthModal) {
-      setIsSimulatingGoogle(false);
-      setGoogleSimStep('idle');
+    const activeEmail = userEmail || driveUser?.email || localStorage.getItem('user_email');
+    if (activeEmail) {
+      fetchUserHistory(activeEmail, driveUser?.uid || auth.currentUser?.uid);
     }
-  }, [showAuthModal]);
-
-  useEffect(() => {
-    if (isSimulatingGoogle && googleSimStep === 'authenticating') {
-      const timer = setTimeout(() => {
-        setGoogleSimStep('success');
-        const finalEmail = googleSimEmail.trim() || 'martinvelozz01@gmail.com';
-        const finalName = googleSimName.trim() || finalEmail.split('@')[0];
-        handleIdentifyUser(finalEmail, finalName);
-        
-        const successTimer = setTimeout(() => {
-          setShowAuthModal(false);
-          setIsSimulatingGoogle(false);
-          setGoogleSimStep('idle');
-        }, 1200);
-        return () => clearTimeout(successTimer);
-      }, 1500);
-      return () => clearTimeout(timer);
-    }
-  }, [isSimulatingGoogle, googleSimStep, googleSimEmail, googleSimName]);
+  }, [userEmail, driveUser]);
 
   // Seguimiento de actividad universal (registra tanto usuarios identificados como visitantes anónimos)
   useEffect(() => {
@@ -431,13 +460,14 @@ export default function App() {
     setViewMode('setup');
   };
 
-  const fetchUserHistory = async (email: string) => {
+  const fetchUserHistory = async (email: string, explicitUid?: string) => {
     setIsLoadingHistory(true);
     try {
-      const res = await fetch(`/api/history?email=${encodeURIComponent(email)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setUserHistory(data.studies || []);
+      const uid = explicitUid || driveUser?.uid || auth.currentUser?.uid;
+      const { studies, fromCloud } = await loadUserNotebooks({ uid, email });
+      setUserHistory(studies || []);
+      if (fromCloud) {
+        setIsCloudSynced(true);
       }
     } catch (err) {
       console.error("Error fetching user history:", err);
@@ -484,7 +514,7 @@ export default function App() {
     const currentOralSessions = customFields?.oralExamSessions !== undefined ? customFields.oralExamSessions : oralExamSessions;
     const currentActiveOral = customFields?.activeOralSession !== undefined ? customFields.activeOralSession : activeOralSession;
 
-    const newStudy = {
+    const newStudy: SavedStudyRecord = {
       id: studyId,
       title: cleanTitle,
       files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
@@ -502,26 +532,27 @@ export default function App() {
     };
 
     try {
-      const res = await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userEmail, study: newStudy })
-      });
-      if (res.ok) {
+      setIsSavingStudy(true);
+      const uid = driveUser?.uid || auth.currentUser?.uid;
+      const res = await saveStudyNotebook(newStudy, { uid, email: userEmail });
+      if (res.success) {
         setActiveStudyId(studyId);
         setActiveStudyTitle(newStudy.title);
-        fetchUserHistory(userEmail);
+        setIsCloudSynced(res.firestoreSaved);
+        fetchUserHistory(userEmail, uid);
         setShowSaveStudyModal(false);
       } else {
         if (!silent) {
-          alert("No se pudo guardar en el servidor.");
+          alert("No se pudo guardar el cuaderno.");
         }
       }
     } catch (err) {
       console.error("Error saving study:", err);
       if (!silent) {
-        alert("Error al conectar con el servidor.");
+        alert("Error al conectar con Google Cloud.");
       }
+    } finally {
+      setIsSavingStudy(false);
     }
   };
 
@@ -529,20 +560,13 @@ export default function App() {
     if (!userEmail) return;
 
     try {
-      const res = await fetch("/api/history", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userEmail, studyId })
-      });
-      if (res.ok) {
-        if (activeStudyId === studyId) {
-          setActiveStudyId(null);
-          setActiveStudyTitle('');
-        }
-        fetchUserHistory(userEmail);
-      } else {
-        alert("No se pudo eliminar el estudio.");
+      const uid = driveUser?.uid || auth.currentUser?.uid;
+      await deleteStudyNotebook(studyId, { uid, email: userEmail });
+      if (activeStudyId === studyId) {
+        setActiveStudyId(null);
+        setActiveStudyTitle('');
       }
+      fetchUserHistory(userEmail, uid);
     } catch (err) {
       console.error("Error deleting study:", err);
     }
@@ -590,6 +614,29 @@ export default function App() {
     setActiveStudyTitle(study.title);
   };
 
+  const handleGoogleAuthLogin = async () => {
+    try {
+      setIsGoogleAuthenticating(true);
+      const res = await googleSignIn();
+      if (res && res.user) {
+        setDriveUser(res.user);
+        if (res.accessToken) {
+          setDriveAccessToken(res.accessToken);
+          setCachedAccessToken(res.accessToken);
+        }
+        const email = res.user.email || '';
+        const name = res.user.displayName || email.split('@')[0];
+        handleIdentifyUser(email, name);
+        setShowAuthModal(false);
+      }
+    } catch (err: any) {
+      console.error("Error en inicio de sesión con Google:", err);
+      alert(err.message || "No se pudo conectar con Google.");
+    } finally {
+      setIsGoogleAuthenticating(false);
+    }
+  };
+
   const handleIdentifyUser = (email: string, name?: string) => {
     const trimmedEmail = email.trim();
     if (!trimmedEmail) return;
@@ -601,21 +648,29 @@ export default function App() {
     setUserEmail(trimmedEmail);
     setUserDisplayName(displayName);
 
+    const uid = driveUser?.uid || auth.currentUser?.uid;
     trackUserActivity({
       email: trimmedEmail,
       displayName,
+      uid,
       authProvider: driveUser ? 'google' : 'guest',
     });
     
-    fetchUserHistory(trimmedEmail);
+    fetchUserHistory(trimmedEmail, uid);
     setShowAuthModal(false);
   };
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      await logoutGoogle();
+    } catch (e) {}
     localStorage.removeItem('user_email');
     localStorage.removeItem('user_display_name');
     setUserEmail(null);
     setUserDisplayName(null);
+    setDriveUser(null);
+    setDriveAccessToken(null);
+    setCachedAccessToken(null);
     setUserHistory([]);
     setActiveStudyId(null);
     setActiveStudyTitle('');
@@ -843,7 +898,7 @@ export default function App() {
   const handleImportSelectedDriveFiles = async () => {
     if (selectedDriveFileIds.length === 0) return;
     if (!driveAccessToken) {
-      alert("Debes conectar tu cuenta de Google Drive.");
+      showToast('warning', 'Conexión requerida', 'Debes conectar tu cuenta de Google Drive para descargar archivos.');
       return;
     }
 
@@ -859,54 +914,112 @@ export default function App() {
     }
 
     setIsImportingDriveFiles(true);
+    setDriveImportErrorDetails(null);
+    setDriveImportStatusText(`Iniciando descarga de ${filesToImport.length} archivo(s)...`);
+
     try {
       const importedFiles: File[] = [];
+      const failedFiles: { name: string; error: string }[] = [];
 
-      for (const df of filesToImport) {
-        const result = await importDriveFile(driveAccessToken, df);
-        const fileObj = new File([result.text], result.fileName || df.name, { type: 'text/plain' });
-        (fileObj as any).preExtractedText = result.text;
-        importedFiles.push(fileObj);
+      for (let idx = 0; idx < filesToImport.length; idx++) {
+        const df = filesToImport[idx];
+        setDriveImportStatusText(`Descargando y extrayendo "${df.name}" (${idx + 1} de ${filesToImport.length})...`);
+        try {
+          const result = await importDriveFile(driveAccessToken, df);
+          if (!result.text || result.text.trim().length === 0) {
+            failedFiles.push({
+              name: df.name,
+              error: 'El archivo está vacío o es un PDF escaneado (fotocopia) sin capa de texto seleccionable.'
+            });
+            continue;
+          }
+          const fileObj = new File([result.text], result.fileName || df.name, { type: 'text/plain' });
+          (fileObj as any).preExtractedText = result.text;
+          importedFiles.push(fileObj);
+        } catch (fileErr: any) {
+          console.error(`Error importando ${df.name}:`, fileErr);
+          failedFiles.push({
+            name: df.name,
+            error: fileErr.message || String(fileErr)
+          });
+        }
       }
 
-      await addFiles(importedFiles);
-      setSelectedDriveFileIds([]);
-      setShowGoogleDocModal(false);
-      alert(`🎉 ¡${importedFiles.length} archivo(s) de Google Drive importado(s) con éxito a tu cuaderno!`);
+      if (importedFiles.length > 0) {
+        await addFiles(importedFiles);
+        setSelectedDriveFileIds([]);
+        if (failedFiles.length === 0) {
+          setShowGoogleDocModal(false);
+          showToast('success', '¡Archivos Importados!', `Se importaron ${importedFiles.length} documento(s) correctamente a tu cuaderno.`);
+        } else {
+          showToast(
+            'warning',
+            'Importación parcial',
+            `Se añadieron ${importedFiles.length} archivo(s), pero ${failedFiles.length} archivo(s) no pudieron procesarse. Revisa el detalle en el modal.`
+          );
+        }
+      }
+
+      if (failedFiles.length > 0) {
+        const errorText = failedFiles.map(f => `• ${f.name}:\n  ${f.error}`).join('\n\n');
+        setDriveImportErrorDetails(errorText);
+        showToast(
+          'error',
+          'Aviso sobre archivos no descargados',
+          `No se pudieron descargar o transcribir ${failedFiles.length} archivo(s):\n${failedFiles.map(f => f.name).join(', ')}`
+        );
+      }
     } catch (err: any) {
       console.error("Error importing Drive files:", err);
-      alert(err.message || "Ocurrió un error al importar los archivos de Google Drive.");
+      showToast('error', 'Error en Google Drive', err.message || "Ocurrió un error al importar los archivos de Google Drive.");
     } finally {
       setIsImportingDriveFiles(false);
+      setDriveImportStatusText('');
     }
   };
 
   const addFiles = async (newFiles: File[]) => {
     if (userTier === 'free' && !activeStudyId && userHistory.length >= 2) {
-      alert("⚠️ Has alcanzado el límite de 2 cuadernos de estudio en tu cuenta gratuita. Por favor, actualiza a PRO para crear y usar más cuadernos.");
+      showToast('warning', 'Límite Gratuito', 'Has alcanzado el límite de 2 cuadernos en la cuenta gratuita. Pasa a PRO para cuadernos ilimitados.');
       setShowBillingModal(true);
       return;
     }
 
-    const validFiles = newFiles.filter(f => 
-      f.type === 'application/pdf' || 
-      f.type.startsWith('text/') || 
-      f.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      f.type === 'application/msword' ||
-      f.name.toLowerCase().endsWith('.pdf') || 
-      f.name.toLowerCase().endsWith('.md') || 
-      f.name.toLowerCase().endsWith('.txt') ||
-      f.name.toLowerCase().endsWith('.csv') ||
-      f.name.toLowerCase().endsWith('.docx') ||
-      f.name.toLowerCase().endsWith('.doc') ||
-      f.name.toLowerCase().endsWith('.gdoc')
-    );
+    const validFiles = newFiles.filter(f => {
+      const lower = f.name.toLowerCase();
+      return (
+        f.type === 'application/pdf' || 
+        f.type.startsWith('text/') || 
+        f.type.startsWith('image/') ||
+        f.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        f.type === 'application/msword' ||
+        f.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+        f.type === 'application/vnd.ms-powerpoint' ||
+        lower.endsWith('.pdf') || 
+        lower.endsWith('.docx') || 
+        lower.endsWith('.doc') || 
+        lower.endsWith('.pptx') || 
+        lower.endsWith('.ppt') || 
+        lower.endsWith('.png') || 
+        lower.endsWith('.jpg') || 
+        lower.endsWith('.jpeg') || 
+        lower.endsWith('.webp') || 
+        lower.endsWith('.bmp') || 
+        lower.endsWith('.tiff') || 
+        lower.endsWith('.tif') || 
+        lower.endsWith('.heic') || 
+        lower.endsWith('.md') || 
+        lower.endsWith('.txt') || 
+        lower.endsWith('.csv') || 
+        lower.endsWith('.gdoc')
+      );
+    });
 
     if (validFiles.length === 0) {
       if (newFiles.length > 0) {
-        alert(`No se pudo procesar el archivo "${newFiles[0].name}". Formato no reconocido. Los formatos permitidos son PDF (.pdf), Word (.docx), Google Docs o Texto (.txt, .md, .csv).`);
+        showToast('error', 'Formato no soportado', `No se pudo procesar "${newFiles[0].name}". Formatos permitidos: PDF (digital o escaneado), Presentaciones PowerPoint (.pptx), Imágenes/Fotos (.jpg, .png), Word (.docx) o Texto.`);
       } else {
-        alert('Por favor, selecciona archivos válidos (PDF, Word, Google Docs o Texto).');
+        showToast('warning', 'Sin archivos válidos', 'Por favor, selecciona archivos válidos (PDF, PowerPoint, Fotos/Imágenes, Word o Texto).');
       }
       return;
     }
@@ -921,7 +1034,7 @@ export default function App() {
 
     if (userTier === 'free' && (files.length + validFiles.length) > 2) {
       setShowBillingModal(true);
-      alert('⚠️ Límite del plan gratuito alcanzado. El plan gratuito está limitado a un máximo de 2 documentos simultáneos. ¡Mejora tu cuenta a PRO para subidas ilimitadas!');
+      showToast('warning', 'Límite Gratuito', 'El plan gratuito está limitado a 2 documentos simultáneos. Actualiza a PRO para fuentes ilimitadas.');
       return;
     }
 
@@ -929,6 +1042,9 @@ export default function App() {
     setExtractingTotalFiles(validFiles.length);
     setExtractingFileNamesList(validFiles.map(f => f.name));
     setExtractProgress(12);
+
+    const abortController = new AbortController();
+    extractionAbortControllerRef.current = abortController;
 
     let simulatedProgress = 12;
     const progressInterval = setInterval(() => {
@@ -940,8 +1056,10 @@ export default function App() {
       const newFileTexts = { ...fileTexts };
       const newActiveFileNames = [...activeFileNames];
       const successfullyExtractedFiles: File[] = [];
+      const failedExtractions: { name: string; error: string }[] = [];
       
       for (let i = 0; i < validFiles.length; i++) {
+        if (abortController.signal.aborted) break;
         const file = validFiles[i];
         setCurrentExtractingFile(file.name);
         setExtractingFileIndex(i + 1);
@@ -951,11 +1069,14 @@ export default function App() {
           if ((file as any).preExtractedText) {
             text = (file as any).preExtractedText;
           } else {
-            text = await extractTextFromFile(file);
+            text = await extractTextFromFile(file, abortController.signal);
           }
 
-          if (!text || text.trim().length === 0) {
-            throw new Error(`El archivo "${file.name}" no contiene texto que se pueda extraer (puede ser un PDF escaneado sin capa de texto).`);
+          if (abortController.signal.aborted) break;
+
+          const substantive = text.replace(/--\s*\d+\s+of\s+\d+\s*--/gi, '').replace(/[\s\r\n\t]+/g, ' ').trim();
+          if (!text || substantive.length === 0) {
+            throw new Error(`El archivo "${file.name}" no contiene texto extraíble. Puede ser un PDF escaneado (fotocopia) sin capa OCR.`);
           }
 
           newFileTexts[file.name] = text;
@@ -969,17 +1090,27 @@ export default function App() {
           simulatedProgress = Math.max(simulatedProgress, completedFraction);
           setExtractProgress(simulatedProgress);
         } catch (fileError: any) {
+          if (fileError?.name === 'AbortError' || abortController.signal.aborted) {
+            console.log('Extracción cancelada por el usuario.');
+            break;
+          }
           console.error(`Error extracting file ${file.name}:`, fileError);
-          alert(`Error al procesar "${file.name}":\n${fileError.message || fileError}`);
+          failedExtractions.push({ name: file.name, error: fileError.message || String(fileError) });
+          showToast('error', `Aviso sobre "${file.name}"`, fileError.message || 'Error al procesar el archivo');
         }
       }
       
+      if (abortController.signal.aborted) {
+        return;
+      }
+
       if (successfullyExtractedFiles.length > 0) {
         const updatedFiles = [...files, ...successfullyExtractedFiles];
         setFiles(updatedFiles);
         setFileTexts(newFileTexts);
         setActiveFileNames(newActiveFileNames);
         rebuildStudyText(updatedFiles, newActiveFileNames, newFileTexts);
+        showToast('success', 'Fuentes cargadas', `Se procesaron ${successfullyExtractedFiles.length} documento(s) con éxito.`);
       }
 
       // Smooth completion
@@ -987,9 +1118,16 @@ export default function App() {
       setExtractProgress(100);
       await new Promise((res) => setTimeout(res, 550));
     } catch (error: any) {
+      if (error?.name === 'AbortError' || abortController.signal.aborted) {
+        console.log('Proceso de extracción cancelado por el usuario.');
+        return;
+      }
       console.error('Error extracting text:', error);
-      alert(`Hubo un error al procesar los archivos:\n${error.message || error}`);
+      showToast('error', 'Error al procesar archivos', error.message || String(error));
     } finally {
+      if (extractionAbortControllerRef.current === abortController) {
+        extractionAbortControllerRef.current = null;
+      }
       clearInterval(progressInterval);
       setIsExtracting(false);
       setExtractProgress(0);
@@ -1255,9 +1393,19 @@ export default function App() {
                   setShowAuthModal(true);
                   setShowMobileSidebar(false);
                 }}
-                className="w-full text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-mono uppercase tracking-widest font-bold transition-all duration-200 cursor-pointer border-none"
+                className="w-full text-center py-2 bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-mono uppercase tracking-widest font-bold transition-all duration-200 cursor-pointer border-none rounded"
               >
                 Ingresar / Registrarme
+              </button>
+              <button
+                onClick={() => {
+                  handleIdentifyUser('martinvelozz01@gmail.com', 'Martín Veloz');
+                  setShowMobileSidebar(false);
+                }}
+                className="w-full mt-1.5 text-center py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[8px] font-mono uppercase tracking-wider font-bold transition-all duration-200 cursor-pointer rounded"
+                title="Cargar historial de martinvelozz01@gmail.com"
+              >
+                Cargar como Martín
               </button>
             </>
           )}
@@ -1545,6 +1693,53 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg-systematic text-ink font-sans selection:bg-accent-systematic selection:text-black flex flex-col h-screen overflow-hidden">
+      {/* Toast Notifications System (immune to iframe sandbox alert blocking) */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm sm:max-w-md w-[calc(100vw-2rem)] pointer-events-none">
+        <AnimatePresence>
+          {toasts.map((toast) => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -15, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className={`pointer-events-auto p-3.5 rounded-xl border shadow-2xl backdrop-blur-md flex items-start gap-3 ${
+                toast.type === 'error'
+                  ? 'bg-red-950/95 border-red-500/50 text-red-100 shadow-red-950/50'
+                  : toast.type === 'warning'
+                  ? 'bg-amber-950/95 border-amber-500/50 text-amber-100 shadow-amber-950/50'
+                  : toast.type === 'success'
+                  ? 'bg-emerald-950/95 border-emerald-500/50 text-emerald-100 shadow-emerald-950/50'
+                  : 'bg-zinc-900/95 border-white/20 text-white shadow-black/50'
+              }`}
+            >
+              <div className="shrink-0 mt-0.5">
+                {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400" />}
+                {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400" />}
+                {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                {toast.type === 'info' && <Info className="w-4 h-4 text-blue-400" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                {toast.title && (
+                  <h4 className="font-bold text-[11px] uppercase tracking-wider mb-0.5 font-mono">
+                    {toast.title}
+                  </h4>
+                )}
+                <p className="text-xs leading-relaxed opacity-90 whitespace-pre-wrap font-sans break-words">
+                  {toast.message}
+                </p>
+              </div>
+              <button
+                onClick={() => dismissToast(toast.id)}
+                className="shrink-0 p-1 text-white/50 hover:text-white rounded hover:bg-white/10 transition-colors cursor-pointer"
+                title="Cerrar aviso"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
       {/* Top Header for Mobile */}
       <header className="md:hidden bg-panel-systematic border-b border-white/5 px-4 py-3 flex items-center justify-between z-30 shrink-0 select-none">
         <button
@@ -1680,6 +1875,7 @@ export default function App() {
                         totalFiles={extractingTotalFiles}
                         allFileNames={extractingFileNamesList}
                         progress={extractProgress}
+                        onCancel={cancelExtraction}
                       />
                     ) : (
                       <div className="space-y-3">
@@ -1693,18 +1889,18 @@ export default function App() {
                             id="file-upload"
                             type="file"
                             multiple
-                            accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,.docx,.doc,text/plain,text/markdown,.md,.txt,.csv,.gdoc"
+                            accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint,.pptx,.ppt,image/*,.png,.jpg,.jpeg,.webp,.bmp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,.docx,.doc,text/plain,text/markdown,.md,.txt,.csv,.gdoc"
                             className="hidden"
                             onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
                             onChange={handleFileInput}
                           />
                           <div className="font-mono text-[10px] text-accent-systematic uppercase tracking-widest font-bold mb-1">
-                            + Subir Fuentes Locales (PDF, Word, TXT, .gdoc)
+                            + Subir Fuentes (PDF, PPTX, Fotos/Imágenes, Word, TXT)
                           </div>
                           <p className="text-[10px] text-ink-muted leading-relaxed font-mono">
                             {activeStudyTitle 
-                              ? `Haz clic para explorar o arrastra tus archivos aquí para "${activeStudyTitle}".`
-                              : 'Haz clic para explorar o arrastra tus archivos aquí (crearemos el cuaderno con el nombre de tu archivo).'
+                              ? `Explora o arrastra PDFs (digitales o escaneados con OCR), diapositivas PPTX, fotos de apuntes o Word para "${activeStudyTitle}".`
+                              : 'Explora o arrastra PDFs (digitales o escaneados), diapositivas PPTX, fotos de apuntes o Word (crearemos el cuaderno con su nombre).'
                             }
                           </p>
                           <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center gap-1.5 text-[8.5px] font-mono text-emerald-400">
@@ -1860,22 +2056,49 @@ export default function App() {
                   </div>
 
                   {!userEmail ? (
-                    <div className="flex-grow flex flex-col items-center justify-center text-center p-4 border border-dashed border-white/5 bg-black/10 rounded-xl">
-                      <span className="text-xl mb-2">☁️</span>
-                      <h4 className="text-xs font-bold text-white uppercase mb-1">¿Deseas guardar tu historial?</h4>
-                      <p className="text-[10px] text-ink-muted leading-relaxed max-w-[200px] mb-3">
-                        Identifícate con tu mail o Google para registrar tus sesiones, cargar cuadernos antiguos y seguir estudiando en cualquier lugar.
-                      </p>
-                      <button
-                        onClick={() => {
-                          setTempEmailInput('');
-                          setTempNameInput('');
-                          setShowAuthModal(true);
-                        }}
-                        className="py-1.5 px-3 bg-emerald-500 hover:bg-emerald-400 text-black font-mono font-bold text-[9px] uppercase tracking-wider rounded cursor-pointer"
-                      >
-                        Identificarme
-                      </button>
+                    <div className="flex-grow flex flex-col items-center justify-center text-center p-4 border border-dashed border-emerald-500/20 bg-emerald-950/10 rounded-xl space-y-2.5">
+                      <span className="text-xl">☁️</span>
+                      <div>
+                        <h4 className="text-xs font-bold text-white uppercase mb-1">Cuadernos en Google Cloud</h4>
+                        <p className="text-[10px] text-ink-muted leading-relaxed max-w-[220px]">
+                          Tus cuadernos están respaldados en la nube. Inicia sesión o identifícate para sincronizarlos en este navegador:
+                        </p>
+                      </div>
+
+                      <div className="w-full flex flex-col gap-1.5 pt-1">
+                        <button
+                          onClick={handleGoogleAuthLogin}
+                          disabled={isGoogleAuthenticating}
+                          className="w-full py-1.5 px-3 bg-white text-black hover:bg-zinc-200 font-sans font-bold text-[9px] rounded flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-all"
+                        >
+                          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24">
+                            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
+                            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                          </svg>
+                          <span>{isGoogleAuthenticating ? "Conectando..." : "Entrar con Google"}</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleIdentifyUser('martinvelozz01@gmail.com', 'Martín Veloz')}
+                          className="w-full py-1.5 px-3 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 font-mono text-[8px] uppercase font-bold rounded cursor-pointer transition-all"
+                          title="Cargar historial de martinvelozz01@gmail.com"
+                        >
+                          Cargar como Martín
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setTempEmailInput('');
+                            setTempNameInput('');
+                            setShowAuthModal(true);
+                          }}
+                          className="text-[9px] text-ink-muted hover:text-white underline font-mono cursor-pointer bg-transparent border-none"
+                        >
+                          O ingresar otro correo
+                        </button>
+                      </div>
                     </div>
                   ) : isLoadingHistory ? (
                     <div className="flex-grow flex flex-col items-center justify-center text-center py-10">
@@ -3108,23 +3331,14 @@ app.post('/api/create-checkout', async (req, res) => {
             >
               {/* Header */}
               <div className="p-6 border-b border-white/5 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {isSimulatingGoogle ? (
-                    <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
-                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                    </svg>
-                  ) : (
-                    <AppLogo size="xs" withGlow={false} />
-                  )}
+                <div className="flex items-center gap-2.5">
+                  <AppLogo size="xs" withGlow={false} />
                   <div>
                     <h3 className="text-sm font-bold text-ink uppercase tracking-tight">
-                      {isSimulatingGoogle ? "Iniciar sesión con Google" : "Identificación del Estudiante"}
+                      Identificación de Estudiante
                     </h3>
                     <p className="text-ink-muted text-[10px] uppercase font-mono tracking-wider">
-                      {isSimulatingGoogle ? "Acceso seguro mediante Google" : "Guarda tus apuntes y progresos"}
+                      Sincronización con Google Cloud Firestore
                     </p>
                   </div>
                 </div>
@@ -3137,197 +3351,95 @@ app.post('/api/create-checkout', async (req, res) => {
               </div>
 
               {/* Content Panel */}
-              {isSimulatingGoogle ? (
-                <div className="p-6 bg-bg-systematic/20 space-y-5 min-h-[250px] flex flex-col justify-center">
-                  {googleSimStep === 'selecting' && (
-                    <div className="space-y-4 animate-fadeIn">
-                      <p className="text-xs text-ink-muted text-center leading-relaxed">
-                        Selecciona una cuenta de Google para continuar con <strong className="text-white">Tutor de Cuaderno</strong>
-                      </p>
+              <div className="p-6 bg-bg-systematic/20 space-y-4">
+                <p className="text-xs text-ink-muted leading-relaxed">
+                  Conéctate para respaldar tus cuadernos, sesiones y exámenes orales de forma permanente en la nube de Google.
+                </p>
 
-                      {/* Default user account option from active session */}
-                      <button
-                        onClick={() => {
-                          setGoogleSimEmail('martinvelozz01@gmail.com');
-                          setGoogleSimName('Martin Veloz');
-                          setGoogleSimStep('authenticating');
-                        }}
-                        className="w-full p-3.5 bg-white/5 border border-white/10 hover:border-accent-systematic hover:bg-white/10 rounded-xl flex items-center gap-3 transition-all cursor-pointer text-left"
-                      >
-                        <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-500 to-indigo-600 flex items-center justify-center font-bold text-sm text-white shrink-0">
-                          MV
-                        </div>
-                        <div className="overflow-hidden flex-grow">
-                          <h4 className="text-xs font-bold text-white truncate">Martin Veloz</h4>
-                          <p className="text-[10px] text-ink-muted truncate">martinvelozz01@gmail.com</p>
-                        </div>
-                        <span className="text-[10px] text-emerald-400 font-mono font-bold tracking-widest shrink-0 uppercase">Sesión activa</span>
-                      </button>
-
-                      {/* Use other account section */}
-                      <div className="border-t border-white/5 pt-3">
-                        <span className="block text-[9px] font-mono text-ink-muted uppercase tracking-wider mb-2">¿Usar otra cuenta de Google?</span>
-                        <div className="flex gap-2">
-                          <input
-                            type="email"
-                            placeholder="ejemplo@gmail.com"
-                            className="flex-grow bg-bg-systematic border border-white/10 p-2.5 rounded-lg text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
-                            id="customGoogleEmail"
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                const val = (e.target as HTMLInputElement).value.trim();
-                                if (val) {
-                                  setGoogleSimEmail(val);
-                                  setGoogleSimName(val.split('@')[0]);
-                                  setGoogleSimStep('authenticating');
-                                }
-                              }
-                            }}
-                          />
-                          <button
-                            onClick={() => {
-                              const el = document.getElementById('customGoogleEmail') as HTMLInputElement;
-                              const val = el?.value.trim();
-                              if (val) {
-                                setGoogleSimEmail(val);
-                                setGoogleSimName(val.split('@')[0]);
-                                setGoogleSimStep('authenticating');
-                              } else {
-                                alert("Por favor ingresa un correo electrónico de Google válido.");
-                              }
-                            }}
-                            className="px-4 py-2 bg-white text-black hover:bg-zinc-200 font-mono text-[9px] uppercase tracking-wider font-bold rounded cursor-pointer border-none"
-                          >
-                            Continuar
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="text-center pt-2">
-                        <button
-                          onClick={() => {
-                            setIsSimulatingGoogle(false);
-                            setGoogleSimStep('idle');
-                          }}
-                          className="text-[10px] font-mono text-ink-muted hover:text-white underline cursor-pointer bg-transparent border-none"
-                        >
-                          Volver al registro clásico
-                        </button>
-                      </div>
-                    </div>
+                {/* Google Sign-In button for instant authentic connection */}
+                <button
+                  onClick={handleGoogleAuthLogin}
+                  disabled={isGoogleAuthenticating}
+                  className="w-full py-3 px-4 bg-white text-black hover:bg-zinc-200 transition-all text-xs font-bold rounded-lg flex items-center justify-center gap-3 cursor-pointer border-none shadow-sm disabled:opacity-50"
+                >
+                  {isGoogleAuthenticating ? (
+                    <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                    </svg>
                   )}
+                  <span>{isGoogleAuthenticating ? "Conectando con Google..." : "Continuar con Google"}</span>
+                </button>
 
-                  {googleSimStep === 'authenticating' && (
-                    <div className="text-center space-y-4 animate-fadeIn py-6 flex flex-col items-center justify-center">
-                      {/* Interactive Google colored pulsing dot loader */}
-                      <div className="flex items-center justify-center gap-2">
-                        <span className="w-3 h-3 rounded-full bg-[#4285F4] animate-bounce" style={{ animationDelay: '0s' }}></span>
-                        <span className="w-3 h-3 rounded-full bg-[#EA4335] animate-bounce" style={{ animationDelay: '0.1s' }}></span>
-                        <span className="w-3 h-3 rounded-full bg-[#FBBC05] animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-                        <span className="w-3 h-3 rounded-full bg-[#34A853] animate-bounce" style={{ animationDelay: '0.3s' }}></span>
-                      </div>
-                      <div className="space-y-1">
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">Verificando Credenciales</h4>
-                        <p className="text-[10px] text-ink-muted max-w-xs mx-auto leading-relaxed">
-                          Conectando de forma segura con tu cuenta de Google <strong className="text-indigo-400">{googleSimEmail}</strong>...
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {googleSimStep === 'success' && (
-                    <div className="text-center space-y-4 py-6 flex flex-col items-center justify-center animate-fadeIn">
-                      <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-                        <CheckCircle2 className="w-7 h-7 text-emerald-400" />
-                      </div>
-                      <div className="space-y-1">
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">¡Acceso Autorizado!</h4>
-                        <p className="text-[10px] text-ink-muted leading-relaxed">
-                          Has iniciado sesión correctamente como <strong className="text-emerald-400">{googleSimEmail}</strong>.
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                <div className="relative flex py-1 items-center">
+                  <div className="flex-grow border-t border-white/5"></div>
+                  <span className="flex-shrink mx-3 text-[9px] font-mono text-ink-muted uppercase">O ingresar correo</span>
+                  <div className="flex-grow border-t border-white/5"></div>
                 </div>
-              ) : (
-                <>
-                  <div className="p-6 bg-bg-systematic/20 space-y-4">
-                    <p className="text-xs text-ink-muted leading-relaxed">
-                      Para registrar tu historial de estudio de la manera más rápida y sencilla, ingresa tu correo electrónico y tu nombre.
-                    </p>
 
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Nombre Completo</label>
-                        <input
-                          type="text"
-                          placeholder="Ej. Martín Mano"
-                          value={tempNameInput}
-                          onChange={(e) => setTempNameInput(e.target.value)}
-                          className="w-full bg-bg-systematic border border-white/10 p-3 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Correo Electrónico</label>
-                        <input
-                          type="email"
-                          placeholder="tucorreo@gmail.com"
-                          value={tempEmailInput}
-                          onChange={(e) => setTempEmailInput(e.target.value)}
-                          className="w-full bg-bg-systematic border border-white/10 p-3 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Google Sign-In button for fast convenience */}
-                    <div className="relative flex py-2 items-center">
-                      <div className="flex-grow border-t border-white/5"></div>
-                      <span className="flex-shrink mx-4 text-[9px] font-mono text-ink-muted uppercase">O continuar con</span>
-                      <div className="flex-grow border-t border-white/5"></div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        setIsSimulatingGoogle(true);
-                        setGoogleSimStep('selecting');
-                      }}
-                      className="w-full py-2.5 bg-white text-black hover:bg-zinc-200 transition-colors text-xs font-bold rounded flex items-center justify-center gap-2 cursor-pointer border-none"
-                    >
-                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
-                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                      </svg>
-                      <span>Conectar con Google</span>
-                    </button>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Nombre Completo</label>
+                    <input
+                      type="text"
+                      placeholder="Ej. Martin Veloz"
+                      value={tempNameInput}
+                      onChange={(e) => setTempNameInput(e.target.value)}
+                      className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
+                    />
                   </div>
-
-                  {/* Footer */}
-                  <div className="p-4 border-t border-white/5 bg-bg-systematic/50 flex justify-end gap-2">
-                    <button
-                      onClick={() => setShowAuthModal(false)}
-                      className="px-4 py-2 border border-white/10 hover:border-white/20 text-ink font-mono text-[9px] uppercase tracking-wider rounded cursor-pointer bg-transparent"
-                    >
-                      Cancelar
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (!tempEmailInput.trim()) {
-                          alert('Por favor ingresa tu correo electrónico.');
-                          return;
+                  <div>
+                    <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Correo Electrónico</label>
+                    <input
+                      type="email"
+                      placeholder="martinvelozz01@gmail.com"
+                      value={tempEmailInput}
+                      onChange={(e) => setTempEmailInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && tempEmailInput.trim()) {
+                          const name = tempNameInput.trim() || tempEmailInput.split('@')[0];
+                          handleIdentifyUser(tempEmailInput.trim(), name);
+                          setShowAuthModal(false);
                         }
-                        const name = tempNameInput.trim() || tempEmailInput.split('@')[0];
-                        handleIdentifyUser(tempEmailInput.trim(), name);
-                        setShowAuthModal(false);
                       }}
-                      className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-mono text-[9px] uppercase tracking-wider font-bold rounded cursor-pointer border-none"
-                    >
-                      Registrarme
-                    </button>
+                      className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
+                    />
                   </div>
-                </>
-              )}
+                </div>
+
+                <div className="p-2.5 rounded bg-emerald-500/5 border border-emerald-500/20 text-[10px] text-emerald-400 font-mono flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                  <span>Almacenamiento persistente en Google Cloud Firestore</span>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 border-t border-white/5 bg-bg-systematic/50 flex justify-end gap-2">
+                <button
+                  onClick={() => setShowAuthModal(false)}
+                  className="px-4 py-2 border border-white/10 hover:border-white/20 text-ink font-mono text-[9px] uppercase tracking-wider rounded cursor-pointer bg-transparent"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => {
+                    if (!tempEmailInput.trim()) {
+                      alert('Por favor ingresa tu correo electrónico.');
+                      return;
+                    }
+                    const name = tempNameInput.trim() || tempEmailInput.split('@')[0];
+                    handleIdentifyUser(tempEmailInput.trim(), name);
+                    setShowAuthModal(false);
+                  }}
+                  className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-mono text-[9px] uppercase tracking-wider font-bold rounded cursor-pointer border-none"
+                >
+                  Confirmar
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
@@ -3633,6 +3745,8 @@ app.post('/api/create-checkout', async (req, res) => {
                               const isDoc = file.mimeType === 'application/vnd.google-apps.document';
                               const isPdf = file.mimeType === 'application/pdf';
                               const isWord = file.mimeType.includes('word') || file.name.endsWith('.docx');
+                              const isSlides = file.mimeType.includes('presentation') || file.name.endsWith('.pptx') || file.name.endsWith('.ppt');
+                              const isImg = file.mimeType.startsWith('image/') || /\.(png|jpe?g|webp|bmp|gif)$/i.test(file.name);
 
                               return (
                                 <div
@@ -3653,7 +3767,7 @@ app.post('/api/create-checkout', async (req, res) => {
                                       className="w-3.5 h-3.5 rounded border-zinc-600 text-blue-500 focus:ring-0 cursor-pointer shrink-0"
                                     />
                                     <span className="shrink-0 text-base">
-                                      {isDoc ? '📄' : isPdf ? '📕' : isWord ? '📘' : '📁'}
+                                      {isDoc ? '📄' : isPdf ? '📕' : isWord ? '📘' : isSlides ? '📊' : isImg ? '🖼️' : '📁'}
                                     </span>
                                     <div className="truncate">
                                       <div className="font-medium truncate text-white text-[11px] leading-snug">
@@ -3661,7 +3775,7 @@ app.post('/api/create-checkout', async (req, res) => {
                                       </div>
                                       <div className="text-[9px] text-zinc-400 font-mono flex items-center gap-2">
                                         <span>
-                                          {isDoc ? 'Google Doc' : isPdf ? 'PDF' : isWord ? 'Word' : 'Archivo'}
+                                          {isDoc ? 'Google Doc' : isPdf ? 'PDF' : isWord ? 'Word' : isSlides ? 'Presentación' : isImg ? 'Imagen' : 'Archivo'}
                                         </span>
                                         {file.modifiedTime && (
                                           <span>• {new Date(file.modifiedTime).toLocaleDateString('es-AR')}</span>
@@ -3678,6 +3792,30 @@ app.post('/api/create-checkout', async (req, res) => {
                                 </div>
                               );
                             })}
+                          </div>
+                        )}
+
+                        {/* Progress and status message during import */}
+                        {isImportingDriveFiles && driveImportStatusText && (
+                          <div className="p-3 bg-blue-950/40 border border-blue-500/30 rounded-xl flex items-center gap-2.5 text-xs text-blue-200">
+                            <Loader2 className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+                            <span className="font-mono text-[11px]">{driveImportStatusText}</span>
+                          </div>
+                        )}
+
+                        {/* Detailed error feedback if any files failed */}
+                        {driveImportErrorDetails && (
+                          <div className="p-3.5 bg-red-950/40 border border-red-500/40 rounded-xl text-xs text-red-200 space-y-2">
+                            <div className="flex items-center gap-2 font-bold text-red-300">
+                              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                              <span>Detalles sobre archivos no procesados:</span>
+                            </div>
+                            <div className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-32 overflow-y-auto bg-black/40 p-2.5 rounded border border-red-500/20 text-red-200/90">
+                              {driveImportErrorDetails}
+                            </div>
+                            <p className="text-[10px] text-red-300/80 leading-relaxed">
+                              💡 <strong>Consejo:</strong> Si es un libro o fotocopia antigua escaneada (como Aristóteles), puedes abrirlo en tu computadora, copiar los capítulos que desees estudiar y pegarlos en la pestaña <strong>"Texto / Copiar"</strong>, o subirlo como archivo PDF directamente.
+                            </p>
                           </div>
                         )}
                       </div>
@@ -3967,7 +4105,7 @@ app.post('/api/create-checkout', async (req, res) => {
             initial={{ opacity: 0, y: 30, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 30, scale: 0.95 }}
-            className="fixed bottom-16 right-4 sm:right-8 z-50 bg-[#18181b] border border-accent-systematic/50 rounded-2xl p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.85)] max-w-sm w-[90vw] sm:w-80 backdrop-blur-lg"
+            className="fixed bottom-16 right-4 sm:right-8 z-50 bg-[#18181b] border border-accent-systematic/50 rounded-2xl p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.85)] max-w-sm w-[90vw] sm:w-88 backdrop-blur-lg"
           >
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-accent-systematic/15 border border-accent-systematic/30 flex items-center justify-center shrink-0">
@@ -3975,12 +4113,22 @@ app.post('/api/create-checkout', async (req, res) => {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between text-xs font-mono mb-1">
-                  <span className="font-bold text-white truncate max-w-[170px]">
+                  <span className="font-bold text-white truncate max-w-[150px]">
                     {currentExtractingFile || "Procesando apunte..."}
                   </span>
-                  <span className="text-accent-systematic font-bold text-[10.5px] bg-accent-systematic/15 px-1.5 py-0.5 rounded">
-                    {Math.round(extractProgress)}%
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-accent-systematic font-bold text-[10.5px] bg-accent-systematic/15 px-1.5 py-0.5 rounded">
+                      {Math.round(extractProgress)}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={cancelExtraction}
+                      className="px-2 py-0.5 bg-red-950/60 hover:bg-red-900/80 border border-red-500/50 text-red-300 hover:text-white rounded text-[9.5px] font-mono font-bold transition-all cursor-pointer"
+                      title="Abandonar carga"
+                    >
+                      Abandonar
+                    </button>
+                  </div>
                 </div>
                 <div className="w-full h-1.5 bg-black/60 rounded-full overflow-hidden border border-white/5">
                   <div

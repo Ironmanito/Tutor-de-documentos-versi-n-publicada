@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, FileText, CheckCircle2, Loader2, Zap, BookOpen } from 'lucide-react';
+import { Sparkles, FileText, CheckCircle2, Loader2, Zap, BookOpen, AlertTriangle, XCircle, StopCircle } from 'lucide-react';
 
 interface UploadProgressAnimationProps {
   currentFileName?: string;
@@ -8,6 +8,7 @@ interface UploadProgressAnimationProps {
   totalFiles?: number;
   allFileNames?: string[];
   progress?: number;
+  onCancel?: () => void;
 }
 
 const FUN_PHRASES = [
@@ -25,10 +26,46 @@ export function UploadProgressAnimation({
   currentFileIndex = 1,
   totalFiles = 1,
   allFileNames = [],
-  progress = 45
+  progress = 45,
+  onCancel
 }: UploadProgressAnimationProps) {
   const [phraseIndex, setPhraseIndex] = useState(0);
   const [eyeState, setEyeState] = useState<'normal' | 'wink' | 'happy'>('normal');
+  const [isStuck, setIsStuck] = useState(false);
+  const [stuckSeconds, setStuckSeconds] = useState(0);
+
+  const lastProgressRef = useRef<number>(progress);
+  const lastProgressTimeRef = useRef<number>(Date.now());
+  const startTimeRef = useRef<number>(Date.now());
+
+  // Track if progress is stuck on the same percentage
+  useEffect(() => {
+    const currentProg = Math.round(progress);
+    if (Math.abs(currentProg - lastProgressRef.current) > 1) {
+      lastProgressRef.current = currentProg;
+      lastProgressTimeRef.current = Date.now();
+      setIsStuck(false);
+      setStuckSeconds(0);
+    }
+  }, [progress]);
+
+  // Periodic check for stuck progress (if same % for > 5s or total time > 8s)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const timeOnCurrentPercent = (now - lastProgressTimeRef.current) / 1000;
+      const totalTime = (now - startTimeRef.current) / 1000;
+
+      if (timeOnCurrentPercent >= 5 || totalTime >= 8) {
+        setIsStuck(true);
+        setStuckSeconds(Math.floor(timeOnCurrentPercent));
+      } else {
+        setIsStuck(false);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   // Rotate fun phrases every 2.4s
   useEffect(() => {
@@ -155,7 +192,7 @@ export function UploadProgressAnimation({
         </div>
 
         {/* High-Tech Dynamic Progress Bar */}
-        <div className="w-full max-w-md mx-auto mb-4">
+        <div className="w-full max-w-md mx-auto mb-3">
           <div className="flex items-center justify-between text-xs font-mono mb-2">
             <span className="text-zinc-400 flex items-center gap-1.5 truncate max-w-[240px]">
               <FileText className="w-3.5 h-3.5 text-accent-systematic shrink-0 animate-pulse" />
@@ -199,6 +236,48 @@ export function UploadProgressAnimation({
             </div>
           )}
         </div>
+
+        {/* Warning banner and Abandon / Cancel button if stuck on same percentage */}
+        <AnimatePresence>
+          {isStuck && (
+            <motion.div
+              initial={{ opacity: 0, height: 0, y: -6 }}
+              animate={{ opacity: 1, height: 'auto', y: 0 }}
+              exit={{ opacity: 0, height: 0, y: -6 }}
+              className="w-full max-w-md mx-auto mb-3.5 p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-left overflow-hidden"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 animate-bounce" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-[11px] text-amber-300 font-bold uppercase tracking-wider mb-0.5">
+                    ¿La carga se detuvo en {boundedProgress}%?
+                  </div>
+                  <p className="text-[10px] text-zinc-300 leading-snug font-mono">
+                    Los documentos muy extensos o escaneados pueden requerir más tiempo de OCR. Si prefieres no esperar, puedes cancelar este proceso para subir una versión más ligera o en partes.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Action Controls: Abandon/Cancel button */}
+        {onCancel && (
+          <div className="flex items-center justify-center gap-3 pt-1 pb-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer shadow-lg ${
+                isStuck
+                  ? 'bg-red-600 hover:bg-red-500 text-white border border-red-400/50 shadow-red-950/50 scale-105 animate-pulse'
+                  : 'bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-300 hover:text-white border border-white/10'
+              }`}
+            >
+              <StopCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+              <span>{isStuck ? 'Abandonar carga ahora' : 'Cancelar procesamiento'}</span>
+            </button>
+          </div>
+        )}
 
         {/* Mini file list indicator if multiple files */}
         {allFileNames.length > 1 && (

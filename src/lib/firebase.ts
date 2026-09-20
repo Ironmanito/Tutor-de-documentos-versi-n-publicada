@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut, signInAnonymously } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -17,16 +17,13 @@ let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 
 export const initAuth = (
-  onAuthSuccess?: (user: User, token: string) => void,
+  onAuthSuccess?: (user: User, token: string | null) => void,
   onAuthFailure?: () => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken && onAuthSuccess) {
+      if (onAuthSuccess) {
         onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn && onAuthFailure) {
-        // User logged in via session, but we don't have OAuth access token cached yet
-        onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
@@ -40,16 +37,24 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('No se obtuvo el token de acceso de Google Drive.');
-    }
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    cachedAccessToken = credential?.accessToken || null;
+    return { user: result.user, accessToken: cachedAccessToken || '' };
   } catch (error: any) {
     console.error('Error al iniciar sesión con Google:', error);
     throw error;
   } finally {
     isSigningIn = false;
+  }
+};
+
+export const ensureFirebaseAuth = async (): Promise<User | null> => {
+  if (auth.currentUser) return auth.currentUser;
+  try {
+    const cred = await signInAnonymously(auth);
+    return cred.user;
+  } catch (err) {
+    console.warn('Firebase anonymous auth unavailable:', err);
+    return null;
   }
 };
 
