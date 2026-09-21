@@ -323,15 +323,26 @@ export default function App() {
     alert("Clave API eliminada de este navegador.");
   };
 
+  // --- USER IDENTIFICATION & ROLES ---
+  const [userEmail, setUserEmail] = useState<string | null>(() => localStorage.getItem('user_email') || null);
+  const [userDisplayName, setUserDisplayName] = useState<string | null>(() => localStorage.getItem('user_display_name') || null);
+  const ADMIN_EMAILS = ['martinvelozz01@gmail.com'];
+  const isAdmin = Boolean(userEmail && ADMIN_EMAILS.includes(userEmail.toLowerCase().trim()));
+
   // --- GOOGLE CLOUD STORAGE INTEGRATION ---
   const [gcsStatus, setGcsStatus] = useState<{ isConfigured: boolean; bucketName: string | null; environment?: string; cloudRunReady?: boolean; adcInfo?: string } | null>(null);
   const [showGcsModal, setShowGcsModal] = useState(false);
   const [tempBucketInput, setTempBucketInput] = useState('');
   const [isUpdatingBucket, setIsUpdatingBucket] = useState(false);
 
-  const fetchStorageStatus = async () => {
+  const fetchStorageStatus = async (overrideEmail?: string) => {
     try {
-      const res = await fetch("/api/storage/status");
+      const email = overrideEmail !== undefined ? overrideEmail : userEmail;
+      const headers: Record<string, string> = {};
+      if (email) {
+        headers["x-admin-email"] = email;
+      }
+      const res = await fetch("/api/storage/status", { headers });
       if (res.ok) {
         const data = await res.json();
         setGcsStatus(data);
@@ -346,7 +357,7 @@ export default function App() {
 
   useEffect(() => {
     fetchStorageStatus();
-  }, []);
+  }, [userEmail]);
 
   const handleSaveBucketName = async () => {
     if (!tempBucketInput.trim()) {
@@ -357,7 +368,10 @@ export default function App() {
     try {
       const res = await fetch("/api/storage/set-bucket", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-admin-email": userEmail || ""
+        },
         body: JSON.stringify({ bucketName: tempBucketInput.trim() })
       });
       if (res.ok) {
@@ -375,12 +389,7 @@ export default function App() {
     }
   };
 
-  // --- USER IDENTIFICATION & HISTORY SYSTEM ---
-  const [userEmail, setUserEmail] = useState<string | null>(() => localStorage.getItem('user_email') || null);
-  const [userDisplayName, setUserDisplayName] = useState<string | null>(() => localStorage.getItem('user_display_name') || null);
-
-  const ADMIN_EMAILS = ['martinvelozz01@gmail.com'];
-  const isAdmin = Boolean(userEmail && ADMIN_EMAILS.includes(userEmail.toLowerCase().trim()));
+  // --- USER HISTORY & STUDY SESSIONS SYSTEM ---
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [userHistory, setUserHistory] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -1756,7 +1765,9 @@ export default function App() {
             <div className="flex items-center gap-1.5">
               <span>STORAGE:</span>
               <span className={cn("px-1 py-0.2 rounded text-[9px] font-bold", gcsStatus?.isConfigured ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400")}>
-                {gcsStatus?.isConfigured ? `GCS [${gcsStatus.bucketName}]` : 'GCS (SIN BUCKET)'}
+                {isAdmin 
+                  ? (gcsStatus?.isConfigured ? `GCS [${gcsStatus.bucketName || 'DEFAULT'}]` : 'GCS (SIN BUCKET)')
+                  : (gcsStatus?.isConfigured ? 'NUBE ACTIVA' : 'SISTEMA LISTO')}
               </span>
             </div>
             <div>LATENCIA: {isExtracting ? 'CALCULANDO...' : '0.2ms'}</div>
@@ -1765,24 +1776,27 @@ export default function App() {
           </div>
         </div>
 
-        {/* Botón Google Cloud Storage */}
-        <button
-          onClick={() => {
-            setShowGcsModal(true);
-            setShowMobileSidebar(false);
-            setShowMobileInspector(false);
-          }}
-          className="w-full bg-blue-950/40 hover:bg-blue-900/50 text-blue-200 border border-blue-500/30 py-3 px-4 font-mono font-bold text-[9px] uppercase tracking-wider rounded-lg mt-4 cursor-pointer transition-colors flex items-center justify-between"
-          title="Configurar y ver estado de Google Cloud Storage"
-        >
-          <span className="flex items-center gap-2">
-            <span className={cn("w-2 h-2 rounded-full", gcsStatus?.isConfigured ? "bg-emerald-400 animate-pulse" : "bg-amber-400")}></span>
-            <span>☁️ Cloud Storage</span>
-          </span>
-          <span className="text-[8px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-mono">
-            {gcsStatus?.isConfigured ? 'CONECTADO' : 'CONFIGURAR'}
-          </span>
-        </button>
+        {/* Botón Google Cloud Storage (Exclusivo Administrador) */}
+        {isAdmin && (
+          <button
+            onClick={() => {
+              setShowGcsModal(true);
+              setShowMobileSidebar(false);
+              setShowMobileInspector(false);
+            }}
+            className="w-full bg-blue-950/40 hover:bg-blue-900/50 text-blue-200 border border-blue-500/30 py-3 px-4 font-mono font-bold text-[9px] uppercase tracking-wider rounded-lg mt-4 cursor-pointer transition-colors flex items-center justify-between"
+            title="Configurar y ver estado de Google Cloud Storage (Admin)"
+          >
+            <span className="flex items-center gap-2">
+              <span className={cn("w-2 h-2 rounded-full", gcsStatus?.isConfigured ? "bg-emerald-400 animate-pulse" : "bg-amber-400")}></span>
+              <span>☁️ Cloud Storage</span>
+            </span>
+            <span className="text-[8px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-mono flex items-center gap-1">
+              <span className="text-[7px] text-amber-400 font-bold">ADMIN</span>
+              <span>{gcsStatus?.isConfigured ? 'CONECTADO' : 'CONFIGURAR'}</span>
+            </span>
+          </button>
+        )}
 
         {/* Botón Feedback & Críticas Sinceras */}
         <button
@@ -2053,7 +2067,7 @@ export default function App() {
                           </p>
                           <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center gap-1.5 text-[8.5px] font-mono text-emerald-400">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
-                            <span>Directo a Google Cloud Storage {gcsStatus?.bucketName ? `(gs://${gcsStatus.bucketName})` : ''}</span>
+                            <span>{isAdmin && gcsStatus?.bucketName ? `Google Cloud Storage (gs://${gcsStatus.bucketName})` : 'Almacenamiento seguro en la nube'}</span>
                           </div>
                         </div>
 
@@ -4325,9 +4339,9 @@ app.post('/api/create-checkout', async (req, res) => {
         )}
       </AnimatePresence>
 
-      {/* MODAL GOOGLE CLOUD STORAGE */}
+      {/* MODAL GOOGLE CLOUD STORAGE (Exclusivo Administrador) */}
       <AnimatePresence>
-        {showGcsModal && (
+        {isAdmin && showGcsModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             {/* Backdrop */}
             <motion.div
@@ -4353,7 +4367,8 @@ app.post('/api/create-checkout', async (req, res) => {
                   </div>
                   <div>
                     <h3 className="text-sm font-bold text-white uppercase tracking-tight flex items-center gap-2">
-                      Google Cloud Storage
+                      <span>Google Cloud Storage</span>
+                      <span className="bg-amber-500/20 text-amber-400 text-[8px] px-1.5 py-0.5 rounded font-mono font-bold">ADMIN</span>
                     </h3>
                     <p className="text-blue-300/80 text-[10px] uppercase font-mono tracking-wider">
                       Almacenamiento Directo de Archivos & Cuadernos

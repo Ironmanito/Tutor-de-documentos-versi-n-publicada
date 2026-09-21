@@ -62,6 +62,16 @@ app.get("/api/health", (req, res) => {
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+const ADMIN_AUTHORIZED_EMAILS = ['martinvelozz01@gmail.com'];
+function verifyAdminRequest(req: express.Request): boolean {
+  const email = (
+    (req.headers['x-admin-email'] as string) ||
+    (req.query.adminEmail as string) ||
+    ''
+  ).toLowerCase().trim();
+  return ADMIN_AUTHORIZED_EMAILS.includes(email);
+}
+
 const USER_DB_PATH = path.join(process.cwd(), "user_studies_db.json");
 
 interface SavedStudy {
@@ -357,8 +367,18 @@ app.get("/api/check-env", (req, res) => {
 
 // Storage status and management routes
 app.get("/api/storage/status", (req, res) => {
+  const isAdmin = verifyAdminRequest(req);
+  const status = getStorageStatus();
+  if (!isAdmin) {
+    return res.json({
+      isConfigured: status.isConfigured,
+      bucketName: null,
+      environment: "production",
+      cloudRunReady: true,
+    });
+  }
   res.json({
-    ...getStorageStatus(),
+    ...status,
     environment: process.env.NODE_ENV,
     cloudRunReady: true,
     adcInfo: !process.env.GOOGLE_APPLICATION_CREDENTIALS 
@@ -368,6 +388,9 @@ app.get("/api/storage/status", (req, res) => {
 });
 
 app.post("/api/storage/set-bucket", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
   const { bucketName } = req.body;
   if (!bucketName || typeof bucketName !== "string") {
     return res.status(400).json({ error: "Nombre de bucket inválido" });
@@ -1185,16 +1208,6 @@ app.post("/api/users/track", (req, res) => {
     res.status(500).json({ error: error.message || "Error al registrar actividad de usuario" });
   }
 });
-
-const ADMIN_AUTHORIZED_EMAILS = ['martinvelozz01@gmail.com'];
-function verifyAdminRequest(req: express.Request): boolean {
-  const email = (
-    (req.headers['x-admin-email'] as string) ||
-    (req.query.adminEmail as string) ||
-    ''
-  ).toLowerCase().trim();
-  return ADMIN_AUTHORIZED_EMAILS.includes(email);
-}
 
 app.get("/api/admin/users", (req, res) => {
   if (!verifyAdminRequest(req)) {
