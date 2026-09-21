@@ -45,6 +45,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onClose,
   currentUserEmail,
 }) => {
+  const ADMIN_EMAILS = ['martinvelozz01@gmail.com'];
+  const isAdmin = Boolean(
+    currentUserEmail && ADMIN_EMAILS.includes(currentUserEmail.toLowerCase().trim())
+  );
+
   const [activeTab, setActiveTab] = useState<'users' | 'visitors' | 'feedback'>('visitors');
   const [users, setUsers] = useState<AppUserProfile[]>([]);
   const [registeredUsers, setRegisteredUsers] = useState<AppUserProfile[]>([]);
@@ -64,11 +69,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [activeToday, setActiveToday] = useState(0);
 
   const loadData = async () => {
+    if (!isAdmin) return;
     setIsLoading(true);
     try {
       const [usersData, feedbackData] = await Promise.all([
-        fetchAdminUsers(),
-        fetchAdminFeedback(),
+        fetchAdminUsers(currentUserEmail || ''),
+        fetchAdminFeedback(currentUserEmail || ''),
       ]);
       setUsers(usersData.users || []);
       setRegisteredUsers(usersData.registeredUsers || (usersData.users || []).filter(u => u.email && u.email.includes('@')));
@@ -90,12 +96,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && isAdmin) {
       loadData();
     }
-  }, [isOpen]);
+  }, [isOpen, isAdmin]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !isAdmin) return null;
 
   // Filtrado de usuarios con correo
   const filteredRegisteredUsers = registeredUsers.filter((u) => {
@@ -182,7 +188,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Cambiar estado de feedback
   const handleStatusChange = async (id: string, newStatus: 'new' | 'reviewed' | 'replied') => {
     try {
-      await updateFeedbackStatus(id, newStatus);
+      await updateFeedbackStatus(id, newStatus, currentUserEmail || '');
       setFeedback((prev) =>
         prev.map((item) => (item.id === id ? { ...item, status: newStatus } : item))
       );

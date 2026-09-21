@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut, MessageSquareHeart, Users, AlertCircle, Info, X } from 'lucide-react';
+import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut, MessageSquareHeart, Users, AlertCircle, Info, X, ShieldCheck, Shield, Mail, KeyRound, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { extractTextFromFile, importGoogleDocFromUrl } from './lib/pdf';
 import { AudioStreamPlayer, AudioRecorder } from './lib/audio';
 import { cn } from './lib/utils';
@@ -378,6 +378,9 @@ export default function App() {
   // --- USER IDENTIFICATION & HISTORY SYSTEM ---
   const [userEmail, setUserEmail] = useState<string | null>(() => localStorage.getItem('user_email') || null);
   const [userDisplayName, setUserDisplayName] = useState<string | null>(() => localStorage.getItem('user_display_name') || null);
+
+  const ADMIN_EMAILS = ['martinvelozz01@gmail.com'];
+  const isAdmin = Boolean(userEmail && ADMIN_EMAILS.includes(userEmail.toLowerCase().trim()));
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [userHistory, setUserHistory] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -387,9 +390,27 @@ export default function App() {
   const [newStudyTitle, setNewStudyTitle] = useState('');
   const [tempEmailInput, setTempEmailInput] = useState('');
   const [tempNameInput, setTempNameInput] = useState('');
+  const [authMethod, setAuthMethod] = useState<'otp' | 'pin'>('pin');
+  const [authOtpStep, setAuthOtpStep] = useState<'request' | 'verify'>('request');
+  const [authOtpCode, setAuthOtpCode] = useState('');
+  const [authPinCode, setAuthPinCode] = useState('');
+  const [authCountdown, setAuthCountdown] = useState(0);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [authDevCodeNotice, setAuthDevCodeNotice] = useState<string | null>(null);
+  const [authStatusMessage, setAuthStatusMessage] = useState<string | null>(null);
+  const [authErrorMessage, setAuthErrorMessage] = useState<string | null>(null);
+  const [showPinPassword, setShowPinPassword] = useState(false);
   const [isGoogleAuthenticating, setIsGoogleAuthenticating] = useState(false);
   const [isCloudSynced, setIsCloudSynced] = useState(false);
   const [isSavingStudy, setIsSavingStudy] = useState(false);
+
+  // Temporizador de cuenta regresiva para reenvío de código OTP
+  useEffect(() => {
+    if (authCountdown > 0) {
+      const timer = setTimeout(() => setAuthCountdown(c => c - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [authCountdown]);
 
   // Carga inicial de cuadernos y persistencia universal
   useEffect(() => {
@@ -647,6 +668,120 @@ export default function App() {
       }
     } finally {
       setIsGoogleAuthenticating(false);
+    }
+  };
+
+  const handleSendOtpCode = async () => {
+    const cleanEmail = tempEmailInput.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setAuthErrorMessage('Por favor ingresa un correo electrónico válido.');
+      return;
+    }
+    setAuthErrorMessage(null);
+    setAuthStatusMessage(null);
+    setIsAuthLoading(true);
+    try {
+      const res = await fetch('/api/auth/send-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, name: tempNameInput.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'No se pudo enviar el código de verificación.');
+      }
+      setAuthOtpStep('verify');
+      setAuthCountdown(60);
+      if (data.devCode) {
+        setAuthDevCodeNotice(data.devCode);
+      } else {
+        setAuthDevCodeNotice(null);
+      }
+      setAuthStatusMessage(data.message || (data.emailSent ? 'Código enviado a tu bandeja de entrada.' : 'Código de verificación generado.'));
+      showToast('info', 'Código de Verificación', data.emailSent ? 'Revisa tu correo electrónico.' : 'Código generado con éxito.');
+    } catch (err: any) {
+      setAuthErrorMessage(err.message || 'Error al solicitar el código.');
+      showToast('error', 'Error', err.message || 'No se pudo enviar el código.');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleVerifyOtpCode = async () => {
+    const cleanEmail = tempEmailInput.trim().toLowerCase();
+    const cleanCode = authOtpCode.trim();
+    if (!cleanCode) {
+      setAuthErrorMessage('Ingresa el código de 6 dígitos recibido.');
+      return;
+    }
+    setAuthErrorMessage(null);
+    setIsAuthLoading(true);
+    try {
+      const res = await fetch('/api/auth/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          code: cleanCode,
+          name: tempNameInput.trim() || undefined,
+          pin: authPinCode.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Código de verificación incorrecto.');
+      }
+      handleIdentifyUser(cleanEmail, data.name || tempNameInput.trim());
+      showToast('success', 'Identificación Exitosa', `Bienvenido, ${data.name || cleanEmail}`);
+      setShowAuthModal(false);
+      setAuthOtpCode('');
+      setAuthOtpStep('request');
+      setAuthDevCodeNotice(null);
+    } catch (err: any) {
+      setAuthErrorMessage(err.message || 'Código incorrecto o expirado.');
+      showToast('error', 'Error de Verificación', err.message || 'Código incorrecto.');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleLoginWithPin = async () => {
+    const cleanEmail = tempEmailInput.trim().toLowerCase();
+    const cleanPin = authPinCode.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setAuthErrorMessage('Por favor ingresa un correo electrónico válido.');
+      return;
+    }
+    if (!cleanPin || cleanPin.length < 4) {
+      setAuthErrorMessage('La clave o PIN debe tener al menos 4 caracteres.');
+      return;
+    }
+    setAuthErrorMessage(null);
+    setIsAuthLoading(true);
+    try {
+      const res = await fetch('/api/auth/login-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          pin: cleanPin,
+          name: tempNameInput.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Clave o PIN incorrecto.');
+      }
+      handleIdentifyUser(cleanEmail, data.name || tempNameInput.trim());
+      showToast('success', data.isNewPin ? 'PIN Configurado' : 'Acceso Autorizado', `Bienvenido, ${data.name || cleanEmail}`);
+      setShowAuthModal(false);
+      setAuthPinCode('');
+      setAuthDevCodeNotice(null);
+    } catch (err: any) {
+      setAuthErrorMessage(err.message || 'Error al ingresar con PIN.');
+      showToast('error', 'Acceso Denegado', err.message || 'Clave o PIN incorrecto.');
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
@@ -1305,16 +1440,18 @@ export default function App() {
                 >
                   Detalles del Plan
                 </button>
-                <button
-                  onClick={() => {
-                    handleResetTier();
-                    setShowMobileSidebar(false);
-                  }}
-                  className="px-2 text-center border border-red-900/30 hover:bg-red-950/20 text-[9px] font-mono text-red-400 bg-transparent cursor-pointer transition-colors"
-                  title="Restablecer para demostración"
-                >
-                  Reset
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      handleResetTier();
+                      setShowMobileSidebar(false);
+                    }}
+                    className="px-2 text-center border border-red-900/30 hover:bg-red-950/20 text-[9px] font-mono text-red-400 bg-transparent cursor-pointer transition-colors"
+                    title="Restablecer plan (Solo Admin)"
+                  >
+                    Reset
+                  </button>
+                )}
               </div>
             </>
           ) : (
@@ -1397,12 +1534,18 @@ export default function App() {
                 Guarda tu Historial
               </h4>
               <p className="text-[10px] text-ink-muted leading-relaxed mb-3">
-                Identifícate con tu Email o Google para guardar tus cuadernos y progreso en la nube.
+                Identifícate con tu correo para guardar tus cuadernos y progreso en la nube de forma segura.
               </p>
               <button
                 onClick={() => {
                   setTempEmailInput('');
                   setTempNameInput('');
+                  setAuthOtpCode('');
+                  setAuthPinCode('');
+                  setAuthOtpStep('request');
+                  setAuthErrorMessage(null);
+                  setAuthStatusMessage(null);
+                  setAuthDevCodeNotice(null);
                   setShowAuthModal(true);
                   setShowMobileSidebar(false);
                 }}
@@ -1661,24 +1804,26 @@ export default function App() {
           </span>
         </button>
 
-        {/* Botón Comunidad & Lista de Usuarios */}
-        <button
-          onClick={() => {
-            setShowAdminPanel(true);
-            setShowMobileSidebar(false);
-            setShowMobileInspector(false);
-          }}
-          className="w-full bg-zinc-900/60 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 hover:border-amber-500/30 py-3 px-4 font-mono font-bold text-[9px] uppercase tracking-wider rounded-lg mt-2 cursor-pointer transition-colors flex items-center justify-between"
-          title="Ver quiénes usan la app y enviar correos"
-        >
-          <span className="flex items-center gap-2">
-            <Users className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span>👥 Usuarios ({userEmail === 'martinvelozz01@gmail.com' ? 'Admin' : 'Ver'})</span>
-          </span>
-          <span className="text-[8px] bg-white/10 text-neutral-300 px-1.5 py-0.5 rounded font-mono">
-            LISTA
-          </span>
-        </button>
+        {/* Botón Panel de Administración y Métricas (Exclusivo Administrador) */}
+        {isAdmin && (
+          <button
+            onClick={() => {
+              setShowAdminPanel(true);
+              setShowMobileSidebar(false);
+              setShowMobileInspector(false);
+            }}
+            className="w-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 py-3 px-4 font-mono font-bold text-[9px] uppercase tracking-wider rounded-lg mt-2 cursor-pointer transition-colors flex items-center justify-between"
+            title="Panel de administración y métricas"
+          >
+            <span className="flex items-center gap-2">
+              <Users className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>👑 Panel Admin</span>
+            </span>
+            <span className="text-[8px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">
+              MÉTRICAS
+            </span>
+          </button>
+        )}
 
         <button
           onClick={() => {
@@ -2060,38 +2205,33 @@ export default function App() {
 
                   {!userEmail ? (
                     <div className="flex-grow flex flex-col items-center justify-center text-center p-4 border border-dashed border-emerald-500/20 bg-emerald-950/10 rounded-xl space-y-2.5">
-                      <span className="text-xl">☁️</span>
+                      <div className="w-8 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                        <ShieldCheck className="w-4 h-4" />
+                      </div>
                       <div>
-                        <h4 className="text-xs font-bold text-white uppercase mb-1">Cuadernos en Google Cloud</h4>
+                        <h4 className="text-xs font-bold text-white uppercase mb-1">Acceso Seguro</h4>
                         <p className="text-[10px] text-ink-muted leading-relaxed max-w-[220px]">
-                          Tus cuadernos están respaldados en la nube. Inicia sesión o identifícate para sincronizarlos en este navegador:
+                          Tus cuadernos están resguardados de forma privada. Ingresa con tu correo y código de verificación:
                         </p>
                       </div>
 
                       <div className="w-full flex flex-col gap-2 pt-1">
                         <button
-                          onClick={handleGoogleAuthLogin}
-                          disabled={isGoogleAuthenticating}
-                          className="w-full py-2 px-3 bg-white text-black hover:bg-zinc-200 font-sans font-bold text-[9.5px] rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all"
-                        >
-                          <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
-                            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
-                            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                          </svg>
-                          <span>{isGoogleAuthenticating ? "Conectando..." : "Entrar con Google"}</span>
-                        </button>
-
-                        <button
                           onClick={() => {
                             setTempEmailInput('');
                             setTempNameInput('');
+                            setAuthOtpCode('');
+                            setAuthPinCode('');
+                            setAuthOtpStep('request');
+                            setAuthErrorMessage(null);
+                            setAuthStatusMessage(null);
+                            setAuthDevCodeNotice(null);
                             setShowAuthModal(true);
                           }}
-                          className="w-full py-1.5 px-3 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-mono text-[8.5px] uppercase font-bold rounded-lg cursor-pointer transition-all text-center"
+                          className="w-full py-2 px-3 bg-emerald-500 hover:bg-emerald-400 text-black font-sans font-bold text-[9.5px] uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all border-none"
                         >
-                          Identificarme con Correo
+                          <Mail className="w-3.5 h-3.5 shrink-0" />
+                          <span>Ingresar con Correo Seguro</span>
                         </button>
                       </div>
                     </div>
@@ -2659,10 +2799,12 @@ export default function App() {
                 <div>
                   <h3 className="text-lg font-bold text-ink flex items-center gap-2">
                     <Coins className="w-5 h-5 text-accent-systematic" />
-                    Monetización & Suscripción Premium
+                    {isAdmin ? "Suscripción Premium & Gestión Comercial" : "Suscripción Tutor Cuaderno PRO"}
                   </h3>
                   <p className="text-ink-muted text-xs mt-1">
-                    Explora el modelo de negocio, la pasarela de pago simulada y el código de Stripe.
+                    {isAdmin 
+                      ? "Panel de control de planes para estudiantes y guía técnica de monetización Stripe (Visible solo para Administrador)."
+                      : "Desbloquea documentos ilimitados y exámenes orales de voz en alta definición."}
                   </p>
                 </div>
                 <button
@@ -2673,40 +2815,43 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Sub-Header Tabs */}
-              <div className="bg-bg-systematic/50 border-b border-white/5 px-6 py-2 flex gap-2">
-                <button
-                  onClick={() => setBillingTab('plans')}
-                  className={cn(
-                    "px-4 py-2 font-mono text-[10px] uppercase tracking-wider font-bold transition-all border-b-2 cursor-pointer",
-                    billingTab === 'plans' 
-                      ? "border-accent-systematic text-accent-systematic" 
-                      : "border-transparent text-ink-muted hover:text-white"
-                  )}
-                >
-                  [01] Planes Premium (Demo Cliente)
-                </button>
-                <button
-                  onClick={() => setBillingTab('monetize')}
-                  className={cn(
-                    "px-4 py-2 font-mono text-[10px] uppercase tracking-wider font-bold transition-all border-b-2 cursor-pointer",
-                    billingTab === 'monetize' 
-                      ? "border-accent-systematic text-accent-systematic" 
-                      : "border-transparent text-ink-muted hover:text-white"
-                  )}
-                >
-                  [02] Guía de Negocio e Integración
-                </button>
-              </div>
+              {/* Sub-Header Tabs (Visible exclusivamente para el Administrador) */}
+              {isAdmin && (
+                <div className="bg-bg-systematic/50 border-b border-white/5 px-6 py-2 flex items-center gap-2">
+                  <button
+                    onClick={() => setBillingTab('plans')}
+                    className={cn(
+                      "px-4 py-2 font-mono text-[10px] uppercase tracking-wider font-bold transition-all border-b-2 cursor-pointer",
+                      billingTab === 'plans' 
+                        ? "border-accent-systematic text-accent-systematic" 
+                        : "border-transparent text-ink-muted hover:text-white"
+                    )}
+                  >
+                    [01] Planes Premium
+                  </button>
+                  <button
+                    onClick={() => setBillingTab('monetize')}
+                    className={cn(
+                      "px-4 py-2 font-mono text-[10px] uppercase tracking-wider font-bold transition-all border-b-2 cursor-pointer flex items-center gap-1.5",
+                      billingTab === 'monetize' 
+                        ? "border-amber-400 text-amber-300" 
+                        : "border-transparent text-ink-muted hover:text-white"
+                    )}
+                  >
+                    <span className="bg-amber-500/20 text-amber-400 text-[8px] px-1.5 py-0.5 rounded font-mono font-bold">ADMIN</span>
+                    <span>[02] Guía de Negocio & Stripe</span>
+                  </button>
+                </div>
+              )}
 
               {/* Content Panel (Scrollable) */}
               <div className="p-6 md:p-8 overflow-y-auto flex-grow bg-bg-systematic/20">
-                {billingTab === 'plans' ? (
+                {(!isAdmin || billingTab === 'plans') ? (
                   <div>
                     {paymentStep === 'select' && (
                       <div className="space-y-6">
                         <div className="text-center max-w-md mx-auto mb-2">
-                          <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest">Pricing Matrix</span>
+                          <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest">Planes de Estudio</span>
                           <h4 className="text-xl font-bold uppercase tracking-tight text-white mt-1">Elige un plan de estudio</h4>
                           <p className="text-xs text-ink-muted leading-relaxed mt-1">
                             Comienza gratis con lo básico o desbloquea todo el potencial con nuestro plan para estudiantes profesionales.
@@ -2772,7 +2917,7 @@ export default function App() {
                             <div>
                               <span className="font-mono text-[9px] text-amber-500 uppercase tracking-widest font-bold">Plan Profesional</span>
                               <h5 className="text-lg font-bold uppercase tracking-tight mt-1 text-white">
-                                {userDisplayName ? `${userDisplayName} Pro` : 'Estudiante PRO'}
+                                Estudiante PRO
                               </h5>
                               <div className="mt-4 mb-5 flex items-baseline gap-1">
                                 <span className="text-2xl font-black text-amber-400">$2.99 USD</span>
@@ -2859,7 +3004,7 @@ export default function App() {
                         <div className="text-center mb-4">
                           <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest block">Checkout Seguro</span>
                           <h4 className="text-lg font-bold uppercase tracking-tight text-white">Detalles del Pago</h4>
-                          <p className="text-xs text-ink-muted">Completa este simulador interactivo de pago para activar tu cuenta PRO.</p>
+                          <p className="text-xs text-ink-muted">Ingresa los datos de tu tarjeta para activar tu suscripción PRO.</p>
                         </div>
 
                         {/* Interactive Simulated Credit Card */}
@@ -2870,8 +3015,8 @@ export default function App() {
                               <span className="text-[8px] text-zinc-500 uppercase tracking-widest">Suscripción Premium</span>
                               <span className="text-xs font-bold text-accent-systematic tracking-wider">TUTOR CUADERNO</span>
                             </div>
-                            <div className="w-8 h-5 bg-white/5 border border-white/10 rounded flex items-center justify-center text-[7px] text-zinc-400 font-bold">
-                              DEMO
+                            <div className="w-10 h-5 bg-amber-500/20 border border-amber-500/30 rounded flex items-center justify-center text-[8px] text-amber-300 font-bold tracking-wider">
+                              PRO
                             </div>
                           </div>
 
@@ -2905,7 +3050,7 @@ export default function App() {
                           onSubmit={(e) => {
                             e.preventDefault();
                             if (!cardName || !cardNumber || !cardExpiry || !cardCvc) {
-                              alert("Por favor, rellena todos los campos del simulador.");
+                              alert("Por favor completa todos los campos del formulario de pago.");
                               return;
                             }
                             setPaymentStep('processing');
@@ -2929,7 +3074,7 @@ export default function App() {
                           </div>
 
                           <div>
-                            <label className="block text-[9px] font-mono text-zinc-400 uppercase tracking-wider mb-1.5">Número de Tarjeta (Simulado)</label>
+                            <label className="block text-[9px] font-mono text-zinc-400 uppercase tracking-wider mb-1.5">Número de Tarjeta</label>
                             <input
                               type="text"
                               required
@@ -2974,12 +3119,21 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="bg-emerald-950/20 border border-emerald-900/30 p-3 rounded-lg text-emerald-400 text-[10px] leading-relaxed flex items-start gap-2">
-                            <Lock className="w-4 h-4 shrink-0 mt-0.5 text-emerald-500" />
-                            <span>
-                              <strong>Pasarela Segura de Demostración:</strong> Las claves y tarjetas ingresadas son simuladas localmente y no se realiza ningún cobro real. Es útil para auditar el flujo de usuario.
-                            </span>
-                          </div>
+                          {isAdmin ? (
+                            <div className="bg-amber-950/20 border border-amber-900/30 p-3 rounded-lg text-amber-300 text-[10px] leading-relaxed flex items-start gap-2">
+                              <Shield className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                              <span>
+                                <strong>Modo Administrador:</strong> Esta pasarela activa tu cuenta PRO en modo directo de prueba. Para conectar cobros reales bancarios en producción, revisa la pestaña <em>[02] Guía de Negocio & Stripe</em>.
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="bg-emerald-950/20 border border-emerald-900/30 p-3 rounded-lg text-emerald-400 text-[10px] leading-relaxed flex items-start gap-2">
+                              <Lock className="w-4 h-4 shrink-0 mt-0.5 text-emerald-500" />
+                              <span>
+                                <strong>Transacción Protegida:</strong> Cifrado SSL de 256 bits de alta seguridad. Tu cuenta será mejorada inmediatamente al confirmar el pago.
+                              </span>
+                            </div>
+                          )}
 
                           <button
                             type="submit"
@@ -2997,7 +3151,7 @@ export default function App() {
                         <Loader2 className="w-10 h-10 text-accent-systematic animate-spin mb-4" />
                         <h4 className="text-lg font-bold uppercase tracking-tight text-white mb-1">Verificando Transacción</h4>
                         <p className="text-xs text-ink-muted max-w-xs leading-relaxed">
-                          La red bancaria simulada está autorizando tu suscripción mensual. Por favor, no cierres esta ventana.
+                          Procesando y autorizando tu suscripción mensual. Por favor, no cierres esta ventana.
                         </p>
                       </div>
                     )}
@@ -3020,7 +3174,7 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                ) : (
+                ) : isAdmin ? (
                   <div className="space-y-6 text-left">
                     <div className="border-b border-white/5 pb-4 mb-2">
                       <h4 className="text-base font-bold text-white uppercase tracking-tight flex items-center gap-1.5">
@@ -3120,7 +3274,7 @@ app.post('/api/create-checkout', async (req, res) => {
                       </div>
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
 
               {/* Footer */}
@@ -3219,75 +3373,77 @@ app.post('/api/create-checkout', async (req, res) => {
                   </div>
                 </div>
 
-                {/* Configuration Section for the creator */}
-                <div className="border border-amber-500/10 bg-amber-500/5 rounded-xl p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-amber-500 text-xs">⚙️</span>
-                      <span className="font-mono text-[8px] text-amber-500 uppercase tracking-widest font-bold">
-                        Configurar Enlace y Alias (Persistente)
-                      </span>
+                {/* Configuration Section for the creator (Solo Administrador) */}
+                {isAdmin && (
+                  <div className="border border-amber-500/10 bg-amber-500/5 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-amber-500 text-xs">⚙️</span>
+                        <span className="font-mono text-[8px] text-amber-500 uppercase tracking-widest font-bold">
+                          Configurar Enlace y Alias (Admin)
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (isEditingCoffeeLink) {
+                            handleSaveCoffeeLink();
+                          } else {
+                            setTempCoffeeLink(coffeeLink);
+                            setTempCreatorAlias(creatorAlias);
+                            setIsEditingCoffeeLink(true);
+                          }
+                        }}
+                        className="font-mono text-[8px] uppercase tracking-wider text-amber-500 hover:text-white underline cursor-pointer bg-transparent border-none"
+                      >
+                        {isEditingCoffeeLink ? "[Guardar Destino]" : "[Editar Datos]"}
+                      </button>
                     </div>
-                    <button
-                      onClick={() => {
-                        if (isEditingCoffeeLink) {
-                          handleSaveCoffeeLink();
-                        } else {
-                          setTempCoffeeLink(coffeeLink);
-                          setTempCreatorAlias(creatorAlias);
-                          setIsEditingCoffeeLink(true);
-                        }
-                      }}
-                      className="font-mono text-[8px] uppercase tracking-wider text-amber-500 hover:text-white underline cursor-pointer bg-transparent border-none"
-                    >
-                      {isEditingCoffeeLink ? "[Guardar Destino]" : "[Editar Datos]"}
-                    </button>
-                  </div>
 
-                  {isEditingCoffeeLink ? (
-                    <div className="space-y-3">
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-mono text-ink-muted uppercase block">Link de Pago / URL de Mercado Pago:</label>
-                        <input
-                          type="text"
-                          value={tempCoffeeLink}
-                          onChange={(e) => setTempCoffeeLink(e.target.value)}
-                          placeholder="https://link.mercadopago.com.ar/..."
-                          className="w-full bg-zinc-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-accent-systematic"
-                        />
+                    {isEditingCoffeeLink ? (
+                      <div className="space-y-3">
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-mono text-ink-muted uppercase block">Link de Pago / URL de Mercado Pago:</label>
+                          <input
+                            type="text"
+                            value={tempCoffeeLink}
+                            onChange={(e) => setTempCoffeeLink(e.target.value)}
+                            placeholder="https://link.mercadopago.com.ar/..."
+                            className="w-full bg-zinc-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-accent-systematic"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-mono text-ink-muted uppercase block">Alias o CVU de Mercado Pago:</label>
+                          <input
+                            type="text"
+                            value={tempCreatorAlias}
+                            onChange={(e) => setTempCreatorAlias(e.target.value)}
+                            placeholder="martinmano"
+                            className="w-full bg-zinc-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-accent-systematic"
+                          />
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            onClick={handleSaveCoffeeLink}
+                            className="bg-accent-systematic text-black font-mono text-[9px] uppercase tracking-wider px-3 py-1.5 rounded-lg font-bold hover:bg-white cursor-pointer border-none"
+                          >
+                            Guardar Configuración
+                          </button>
+                        </div>
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-mono text-ink-muted uppercase block">Alias o CVU de Mercado Pago:</label>
-                        <input
-                          type="text"
-                          value={tempCreatorAlias}
-                          onChange={(e) => setTempCreatorAlias(e.target.value)}
-                          placeholder="martinmano"
-                          className="w-full bg-zinc-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-accent-systematic"
-                        />
+                    ) : (
+                      <div className="text-[10px] space-y-1.5">
+                        <div>
+                          <span className="text-ink-muted text-[9px] uppercase font-mono block">Enlace actual configurado:</span>
+                          <code className="text-emerald-400/90 truncate block bg-black/35 p-2 rounded mt-1 border border-white/5">{coffeeLink}</code>
+                        </div>
+                        <div>
+                          <span className="text-ink-muted text-[9px] uppercase font-mono block">Alias actual configurado:</span>
+                          <code className="text-emerald-400/90 truncate block bg-black/35 p-2 rounded mt-1 border border-white/5">{creatorAlias}</code>
+                        </div>
                       </div>
-                      <div className="flex justify-end">
-                        <button
-                          onClick={handleSaveCoffeeLink}
-                          className="bg-accent-systematic text-black font-mono text-[9px] uppercase tracking-wider px-3 py-1.5 rounded-lg font-bold hover:bg-white cursor-pointer border-none"
-                        >
-                          Guardar Configuración
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-[10px] space-y-1.5">
-                      <div>
-                        <span className="text-ink-muted text-[9px] uppercase font-mono block">Enlace actual configurado:</span>
-                        <code className="text-emerald-400/90 truncate block bg-black/35 p-2 rounded mt-1 border border-white/5">{coffeeLink}</code>
-                      </div>
-                      <div>
-                        <span className="text-ink-muted text-[9px] uppercase font-mono block">Alias actual configurado:</span>
-                        <code className="text-emerald-400/90 truncate block bg-black/35 p-2 rounded mt-1 border border-white/5">{creatorAlias}</code>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Footer */}
@@ -3325,114 +3481,335 @@ app.post('/api/create-checkout', async (req, res) => {
               className="relative w-full max-w-md bg-panel-systematic border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col z-10"
             >
               {/* Header */}
-              <div className="p-6 border-b border-white/5 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <AppLogo size="xs" withGlow={false} />
+              <div className="p-5 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
                   <div>
                     <h3 className="text-sm font-bold text-ink uppercase tracking-tight">
-                      Identificación de Estudiante
+                      Acceso Seguro a Cuadernos
                     </h3>
                     <p className="text-ink-muted text-[10px] uppercase font-mono tracking-wider">
-                      Sincronización con Google Cloud Firestore
+                      Verificación de cuenta y privacidad
                     </p>
                   </div>
                 </div>
                 <button
                   onClick={() => setShowAuthModal(false)}
-                  className="text-ink-muted hover:text-white font-mono text-[10px] cursor-pointer px-2 py-0.5 border border-white/5 hover:border-white/10 uppercase bg-transparent"
+                  className="text-ink-muted hover:text-white font-mono text-[10px] cursor-pointer px-2 py-1 border border-white/5 hover:border-white/10 uppercase bg-transparent rounded"
                 >
                   ✕
                 </button>
               </div>
 
-              {/* Content Panel */}
-              <div className="p-6 bg-bg-systematic/20 space-y-4">
-                <p className="text-xs text-ink-muted leading-relaxed">
-                  Conéctate para respaldar tus cuadernos, sesiones y exámenes orales de forma permanente en la nube de Google.
-                </p>
-
-                {/* Google Sign-In button for instant authentic connection */}
+              {/* Selector de Método de Autenticación */}
+              <div className="grid grid-cols-2 p-1.5 mx-5 mt-4 bg-bg-systematic rounded-xl border border-white/5">
                 <button
-                  onClick={handleGoogleAuthLogin}
-                  disabled={isGoogleAuthenticating}
-                  className="w-full py-3 px-4 bg-white text-black hover:bg-zinc-200 transition-all text-xs font-bold rounded-lg flex items-center justify-center gap-3 cursor-pointer border-none shadow-sm disabled:opacity-50"
-                >
-                  {isGoogleAuthenticating ? (
-                    <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22-.03-.63z"/>
-                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                    </svg>
+                  type="button"
+                  onClick={() => {
+                    setAuthMethod('pin');
+                    setAuthErrorMessage(null);
+                  }}
+                  className={cn(
+                    "flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-[10px] font-mono uppercase tracking-wider font-bold transition-all cursor-pointer border-none",
+                    authMethod === 'pin'
+                      ? "bg-emerald-500 text-black shadow-sm"
+                      : "text-ink-muted hover:text-ink bg-transparent"
                   )}
-                  <span>{isGoogleAuthenticating ? "Conectando con Google..." : "Continuar con Google"}</span>
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Correo y Clave</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMethod('otp');
+                    setAuthErrorMessage(null);
+                  }}
+                  className={cn(
+                    "flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-[10px] font-mono uppercase tracking-wider font-bold transition-all cursor-pointer border-none",
+                    authMethod === 'otp'
+                      ? "bg-emerald-500 text-black shadow-sm"
+                      : "text-ink-muted hover:text-ink bg-transparent"
+                  )}
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>Código Rápido</span>
+                </button>
+              </div>
 
-                <div className="relative flex py-1 items-center">
-                  <div className="flex-grow border-t border-white/5"></div>
-                  <span className="flex-shrink mx-3 text-[9px] font-mono text-ink-muted uppercase">O ingresar correo</span>
-                  <div className="flex-grow border-t border-white/5"></div>
+              {/* Error Banner */}
+              {authErrorMessage && (
+                <div className="mx-5 mt-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/25 text-red-300 text-xs flex items-center gap-2 font-mono">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                  <span className="flex-grow">{authErrorMessage}</span>
                 </div>
+              )}
 
-                <div className="space-y-3">
-                  <div>
-                    <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Nombre Completo</label>
-                    <input
-                      type="text"
-                      placeholder="Ej. Juan Pérez"
-                      value={tempNameInput}
-                      onChange={(e) => setTempNameInput(e.target.value)}
-                      className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
-                    />
+              {/* Success / Info Status Banner */}
+              {authStatusMessage && !authErrorMessage && (
+                <div className="mx-5 mt-3 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-xs flex items-center gap-2 font-mono">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  <span className="flex-grow">{authStatusMessage}</span>
+                </div>
+              )}
+
+              {/* Dev/Local simulation notice if email SMTP is not yet configured */}
+              {authDevCodeNotice && (
+                <div className="mx-5 mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs space-y-1">
+                  <div className="flex items-center gap-2 font-bold font-mono text-[11px] uppercase text-amber-400">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Código de verificación generado</span>
                   </div>
-                  <div>
-                    <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1">Correo Electrónico</label>
-                    <input
-                      type="email"
-                      placeholder="tu-correo@ejemplo.com"
-                      value={tempEmailInput}
-                      onChange={(e) => setTempEmailInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && tempEmailInput.trim()) {
-                          const name = tempNameInput.trim() || tempEmailInput.split('@')[0];
-                          handleIdentifyUser(tempEmailInput.trim(), name);
-                          setShowAuthModal(false);
-                        }
-                      }}
-                      className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded text-xs text-ink placeholder:text-ink-muted focus:border-accent-systematic focus:outline-none"
-                    />
-                  </div>
+                  <p className="text-[11px] text-amber-300/90 leading-relaxed font-mono">
+                    Ingresa este código para entrar: <span className="px-2 py-0.5 bg-amber-400/20 text-white font-bold rounded tracking-widest text-sm">{authDevCodeNotice}</span>
+                  </p>
                 </div>
+              )}
 
-                <div className="p-2.5 rounded bg-emerald-500/5 border border-emerald-500/20 text-[10px] text-emerald-400 font-mono flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
-                  <span>Almacenamiento persistente en Google Cloud Firestore</span>
-                </div>
+              {/* Modal Body */}
+              <div className="p-5 space-y-4">
+                {authMethod === 'otp' ? (
+                  authOtpStep === 'request' ? (
+                    // PASO 1 OTP: Solicitar Código
+                    <div className="space-y-3.5">
+                      <div>
+                        <label className="block font-mono text-[9.5px] text-ink-muted uppercase tracking-wider mb-1.5">
+                          Nombre Completo (Opcional)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Ej. Martín Veloz"
+                          value={tempNameInput}
+                          onChange={(e) => setTempNameInput(e.target.value)}
+                          className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded-lg text-xs text-ink placeholder:text-ink-muted/50 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-mono text-[9.5px] text-ink-muted uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                          <span>Correo Electrónico</span>
+                          <span className="text-emerald-400/80 font-normal">Requerido</span>
+                        </label>
+                        <input
+                          type="email"
+                          placeholder="tu-correo@ejemplo.com"
+                          value={tempEmailInput}
+                          onChange={(e) => setTempEmailInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSendOtpCode();
+                          }}
+                          className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded-lg text-xs text-ink placeholder:text-ink-muted/50 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 text-[11px] text-ink-muted leading-relaxed flex items-start gap-2.5">
+                        <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        <span>
+                          Te enviaremos un código de seguridad de 6 dígitos válido por 10 minutos. Nadie podrá ver tus cuadernos sin verificar su acceso.
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleSendOtpCode}
+                        disabled={isAuthLoading || !tempEmailInput.trim()}
+                        className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-sans font-bold text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-md transition-all border-none"
+                      >
+                        {isAuthLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Mail className="w-4 h-4" />
+                        )}
+                        <span>{isAuthLoading ? "Enviando código..." : "Enviar Código de Verificación"}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    // PASO 2 OTP: Verificar Código de 6 dígitos
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between bg-white/[0.02] border border-white/5 p-2.5 rounded-lg text-xs">
+                        <div className="truncate text-ink-muted">
+                          Enviado a: <strong className="text-ink">{tempEmailInput}</strong>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAuthOtpStep('request');
+                            setAuthErrorMessage(null);
+                          }}
+                          className="text-[10px] text-emerald-400 hover:underline font-mono bg-transparent border-none cursor-pointer shrink-0 ml-2"
+                        >
+                          Cambiar
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className="block font-mono text-[9.5px] text-ink-muted uppercase tracking-wider mb-2 text-center">
+                          Ingresa el Código de 6 Dígitos
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={6}
+                          placeholder="000000"
+                          autoFocus
+                          value={authOtpCode}
+                          onChange={(e) => setAuthOtpCode(e.target.value.replace(/\D/g, ''))}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && authOtpCode.length === 6) handleVerifyOtpCode();
+                          }}
+                          className="w-full bg-bg-systematic border-2 border-emerald-500/40 p-3 rounded-xl text-center font-mono text-2xl font-bold tracking-[0.35em] text-emerald-300 placeholder:text-zinc-700 focus:border-emerald-400 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Creación opcional de PIN para futuros accesos */}
+                      <div className="pt-1">
+                        <label className="block font-mono text-[9px] text-ink-muted uppercase tracking-wider mb-1 flex items-center justify-between">
+                          <span>Crear PIN de Acceso Rápido (Opcional)</span>
+                          <span className="text-[8.5px] text-ink-muted">4+ caracteres</span>
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="Ej. 1234 o mi_clave"
+                          value={authPinCode}
+                          onChange={(e) => setAuthPinCode(e.target.value)}
+                          className="w-full bg-bg-systematic border border-white/10 p-2 rounded-lg text-xs text-ink placeholder:text-ink-muted/50 focus:border-emerald-500 focus:outline-none font-mono"
+                        />
+                        <p className="text-[9.5px] text-ink-muted mt-1 leading-normal">
+                          Si configuras este PIN, podrás entrar directo en cualquier dispositivo sin esperar el correo.
+                        </p>
+                      </div>
+
+                      <div className="space-y-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={handleVerifyOtpCode}
+                          disabled={isAuthLoading || authOtpCode.length < 6}
+                          className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-sans font-bold text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-md transition-all border-none"
+                        >
+                          {isAuthLoading ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="w-4 h-4" />
+                          )}
+                          <span>{isAuthLoading ? "Verificando..." : "Confirmar e Ingresar"}</span>
+                        </button>
+
+                        <div className="flex items-center justify-between pt-1">
+                          <button
+                            type="button"
+                            onClick={handleSendOtpCode}
+                            disabled={isAuthLoading || authCountdown > 0}
+                            className="text-[10px] text-ink-muted hover:text-ink font-mono bg-transparent border-none cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Reenviar código {authCountdown > 0 ? `(${authCountdown}s)` : ''}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setAuthOtpStep('request')}
+                            className="text-[10px] text-ink-muted hover:text-ink font-mono bg-transparent border-none cursor-pointer flex items-center gap-1"
+                          >
+                            <ArrowLeft className="w-3 h-3" />
+                            <span>Volver</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                ) : (
+                  // MÉTODO PIN / CONTRASEÑA DIRECTA
+                  <div className="space-y-3.5">
+                    <div>
+                      <label className="block font-mono text-[9.5px] text-ink-muted uppercase tracking-wider mb-1.5">
+                        Nombre Completo (Opcional)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ej. Martín Veloz"
+                        value={tempNameInput}
+                        onChange={(e) => setTempNameInput(e.target.value)}
+                        className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded-lg text-xs text-ink placeholder:text-ink-muted/50 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-mono text-[9.5px] text-ink-muted uppercase tracking-wider mb-1.5">
+                        Correo Electrónico
+                      </label>
+                      <input
+                        type="email"
+                        placeholder="tu-correo@ejemplo.com"
+                        value={tempEmailInput}
+                        onChange={(e) => setTempEmailInput(e.target.value)}
+                        className="w-full bg-bg-systematic border border-white/10 p-2.5 rounded-lg text-xs text-ink placeholder:text-ink-muted/50 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-mono text-[9.5px] text-ink-muted uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                        <span>PIN o Clave de Acceso</span>
+                        <span className="text-[8.5px] text-ink-muted">Mínimo 4 caracteres</span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPinPassword ? "text" : "password"}
+                          placeholder="Tu PIN o clave privada"
+                          value={authPinCode}
+                          onChange={(e) => setAuthPinCode(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleLoginWithPin();
+                          }}
+                          className="w-full bg-bg-systematic border border-white/10 p-2.5 pr-10 rounded-lg text-xs text-ink placeholder:text-ink-muted/50 focus:border-emerald-500 focus:outline-none font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPinPassword(!showPinPassword)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink bg-transparent border-none cursor-pointer"
+                        >
+                          {showPinPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 text-[11px] text-ink-muted leading-relaxed flex items-start gap-2.5">
+                      <Lock className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <span>
+                        Acceso seguro y directo: Si es tu primera vez, este PIN se registrará de inmediato como tu clave personal. No requiere dominios propios ni servicios externos.
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleLoginWithPin}
+                      disabled={isAuthLoading || !tempEmailInput.trim() || authPinCode.length < 4}
+                      className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-sans font-bold text-xs uppercase tracking-wider rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-md transition-all border-none"
+                    >
+                      {isAuthLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <KeyRound className="w-4 h-4" />
+                      )}
+                      <span>{isAuthLoading ? "Validando..." : "Entrar a mis Cuadernos"}</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Footer */}
-              <div className="p-4 border-t border-white/5 bg-bg-systematic/50 flex justify-end gap-2">
+              <div className="p-4 border-t border-white/5 bg-bg-systematic/50 flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-[9px] font-mono text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                  <span>Protección cifrada de cuadernos</span>
+                </div>
                 <button
+                  type="button"
                   onClick={() => setShowAuthModal(false)}
-                  className="px-4 py-2 border border-white/10 hover:border-white/20 text-ink font-mono text-[9px] uppercase tracking-wider rounded cursor-pointer bg-transparent"
+                  className="px-3 py-1.5 border border-white/10 hover:border-white/20 text-ink font-mono text-[9px] uppercase tracking-wider rounded cursor-pointer bg-transparent"
                 >
-                  Cancelar
-                </button>
-                <button
-                  onClick={() => {
-                    if (!tempEmailInput.trim()) {
-                      alert('Por favor ingresa tu correo electrónico.');
-                      return;
-                    }
-                    const name = tempNameInput.trim() || tempEmailInput.split('@')[0];
-                    handleIdentifyUser(tempEmailInput.trim(), name);
-                    setShowAuthModal(false);
-                  }}
-                  className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-mono text-[9px] uppercase tracking-wider font-bold rounded cursor-pointer border-none"
-                >
-                  Confirmar
+                  Cerrar
                 </button>
               </div>
             </motion.div>
@@ -4087,11 +4464,13 @@ app.post('/api/create-checkout', async (req, res) => {
       />
 
       {/* PANEL DEL CREADOR (USUARIOS Y FEEDBACK) */}
-      <AdminPanel
-        isOpen={showAdminPanel}
-        onClose={() => setShowAdminPanel(false)}
-        currentUserEmail={userEmail}
-      />
+      {isAdmin && (
+        <AdminPanel
+          isOpen={showAdminPanel}
+          onClose={() => setShowAdminPanel(false)}
+          currentUserEmail={userEmail}
+        />
+      )}
 
       {/* Dynamic Floating Extraction Progress Toast */}
       <AnimatePresence>

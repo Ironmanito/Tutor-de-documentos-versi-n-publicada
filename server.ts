@@ -8,6 +8,8 @@ import dotenv from "dotenv";
 import { PDFParse } from "pdf-parse";
 import * as mammothModule from "mammoth";
 import fs from "fs";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
 import { 
   uploadFileToGCS, 
   saveUserDbToGCS, 
@@ -714,6 +716,341 @@ app.post("/api/import-google-doc", async (req, res) => {
   }
 });
 
+// ==========================================
+// USER AUTHENTICATION & SECURITY (EMAIL OTP & PIN)
+// ==========================================
+
+const USERS_AUTH_DB_PATH = path.join(process.cwd(), "users_auth_db.json");
+
+interface UserAuthRecord {
+  email: string;
+  name: string;
+  pinHash?: string;
+  salt?: string;
+  verified: boolean;
+  registeredAt: string;
+  lastLoginAt: string;
+}
+
+function readAuthDb(): Record<string, UserAuthRecord> {
+  try {
+    if (!fs.existsSync(USERS_AUTH_DB_PATH)) return {};
+    const raw = fs.readFileSync(USERS_AUTH_DB_PATH, "utf8");
+    return JSON.parse(raw) || {};
+  } catch (e) {
+    console.error("[Auth] Error reading auth DB:", e);
+    return {};
+  }
+}
+
+function writeAuthDb(db: Record<string, UserAuthRecord>) {
+  try {
+    fs.writeFileSync(USERS_AUTH_DB_PATH, JSON.stringify(db, null, 2), "utf8");
+  } catch (e) {
+    console.error("[Auth] Error writing auth DB:", e);
+  }
+}
+
+function hashPinWithSalt(pin: string, salt: string): string {
+  return crypto.createHash("sha256").update(`${pin}:${salt}:tutordecuaderno_salt`).digest("hex");
+}
+
+interface OtpEntry {
+  code: string;
+  expiresAt: number;
+  attempts: number;
+  name?: string;
+}
+
+const otpStore: Record<string, OtpEntry> = {};
+
+// Clean up expired OTPs periodically (every 10 min)
+setInterval(() => {
+  const now = Date.now();
+  for (const [email, entry] of Object.entries(otpStore)) {
+    if (entry.expiresAt < now) {
+      delete otpStore[email];
+    }
+  }
+}, 10 * 60 * 1000);
+
+async function sendEmailVerificationCode(to: string, code: string, name?: string): Promise<{ sent: boolean; provider: string; error?: string }> {
+  const userName = name || to.split("@")[0];
+  const subject = `Tu código de acceso a Tutor de Cuaderno: ${code}`;
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 540px; margin: 0 auto; padding: 28px; background-color: #0f1115; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+      <div style="display: flex; align-items: center; margin-bottom: 20px;">
+        <span style="font-size: 20px; font-weight: bold; color: #10b981; letter-spacing: -0.5px;">Tutor de Cuaderno AI</span>
+      </div>
+      <h2 style="font-size: 20px; color: #ffffff; margin-top: 0; font-weight: 600;">Código de Verificación</h2>
+      <p style="font-size: 14px; color: #d4d4d8; line-height: 1.6;">Hola <strong>${userName}</strong>, usa el siguiente código de 6 dígitos para verificar tu cuenta e ingresar a tus cuadernos de estudio de forma segura:</p>
+      
+      <div style="background-color: #181920; border: 1px solid #10b981; border-radius: 12px; padding: 20px; text-align: center; margin: 24px 0;">
+        <span style="font-family: monospace, Courier, monospace; font-size: 34px; letter-spacing: 8px; font-weight: 800; color: #34d399;">${code}</span>
+      </div>
+
+      <p style="font-size: 12px; color: #71717a; line-height: 1.5;">Este código expirará en 10 minutos por razones de seguridad. Si no solicitaste este código, puedes ignorar este mensaje.</p>
+      <div style="border-top: 1px solid #27272a; margin-top: 24px; padding-top: 16px; font-size: 11px; color: #52525b; text-align: center;">
+        Tutor de Cuaderno &bull; Tu espacio de estudio inteligente
+      </div>
+    </div>
+  `;
+
+  // 1. Resend API
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from: process.env.RESEND_FROM || "Tutor de Cuaderno <onboarding@resend.dev>",
+          to: [to],
+          subject,
+          html: htmlContent
+        })
+      });
+      if (res.ok) {
+        console.log(`[Email Auth] Código enviado a ${to} vía Resend`);
+        return { sent: true, provider: "resend" };
+      }
+      const data = await res.json().catch(() => ({}));
+      console.warn("[Email Auth] Resend API error:", data);
+    } catch (e: any) {
+      console.warn("[Email Auth] Resend request failed:", e.message || e);
+    }
+  }
+
+  // 2. SMTP (Gmail, Brevo, custom SMTP)
+  const smtpHost = process.env.SMTP_HOST || (process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
+  const smtpUser = process.env.SMTP_USER || process.env.GMAIL_USER;
+  const smtpPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASS;
+
+  if (smtpHost && smtpUser && smtpPass) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(process.env.SMTP_PORT || "465", 10),
+        secure: (process.env.SMTP_SECURE === "true" || !process.env.SMTP_PORT || process.env.SMTP_PORT === "465"),
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        }
+      });
+
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || `"Tutor de Cuaderno" <${smtpUser}>`,
+        to,
+        subject,
+        html: htmlContent
+      });
+
+      console.log(`[Email Auth] Código enviado a ${to} vía SMTP (${smtpHost})`);
+      return { sent: true, provider: "smtp" };
+    } catch (smtpErr: any) {
+      console.warn("[Email Auth] SMTP delivery error:", smtpErr.message || smtpErr);
+      return { sent: false, provider: "smtp", error: smtpErr.message };
+    }
+  }
+
+  // 3. Fallback when no external email provider is needed
+  console.log(`[AUTH CODE] Para: ${to} -> CÓDIGO DIRECTO: [${code}]`);
+  return { sent: false, provider: "none" };
+}
+
+// Endpoint: Check if email exists & has PIN
+app.get("/api/auth/status", (req, res) => {
+  const { email } = req.query;
+  if (!email || typeof email !== "string") {
+    return res.status(400).json({ error: "Falta el correo electrónico" });
+  }
+  const cleanEmail = email.trim().toLowerCase();
+  const authDb = readAuthDb();
+  const user = authDb[cleanEmail];
+  res.json({
+    exists: !!user,
+    hasPin: !!(user && user.pinHash),
+    displayName: user?.name || null
+  });
+});
+
+// Endpoint: Send 6-digit OTP code to email
+app.post("/api/auth/send-code", async (req, res) => {
+  try {
+    const { email, name } = req.body;
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      return res.status(400).json({ error: "Ingresa un correo electrónico válido." });
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name && typeof name === "string" ? name.trim() : cleanEmail.split("@")[0];
+
+    // Generate random 6-digit code (100000 - 999999)
+    const code = Math.floor(100000 + crypto.randomInt(900000)).toString();
+
+    otpStore[cleanEmail] = {
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+      attempts: 0,
+      name: cleanName
+    };
+
+    const sendResult = await sendEmailVerificationCode(cleanEmail, code, cleanName);
+
+    res.json({
+      success: true,
+      emailSent: sendResult.sent,
+      provider: sendResult.provider,
+      devCode: sendResult.sent ? undefined : code,
+      message: sendResult.sent
+        ? `Código enviado con éxito a ${cleanEmail}`
+        : `Código de verificación generado para ${cleanEmail}`
+    });
+  } catch (err: any) {
+    console.error("[Auth] Error in send-code:", err);
+    res.status(500).json({ error: "Error al generar código de verificación: " + (err.message || err) });
+  }
+});
+
+// Endpoint: Verify 6-digit OTP code
+app.post("/api/auth/verify-code", (req, res) => {
+  try {
+    const { email, code, name, pin } = req.body;
+    if (!email || !code) {
+      return res.status(400).json({ error: "Se requiere correo y código de verificación." });
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanCode = code.toString().trim();
+
+    const record = otpStore[cleanEmail];
+    if (!record) {
+      return res.status(400).json({ error: "No hay un código activo para este correo o ya expiró. Solicita uno nuevo." });
+    }
+
+    if (Date.now() > record.expiresAt) {
+      delete otpStore[cleanEmail];
+      return res.status(400).json({ error: "El código ha expirado (validez: 10 minutos). Solicita uno nuevo." });
+    }
+
+    if (record.attempts >= 5) {
+      delete otpStore[cleanEmail];
+      return res.status(429).json({ error: "Demasiados intentos fallidos. Solicita un código nuevo por seguridad." });
+    }
+
+    if (record.code !== cleanCode) {
+      record.attempts += 1;
+      return res.status(400).json({ error: "Código incorrecto. Revisa el número ingresado." });
+    }
+
+    // Code is valid! Remove from OTP store
+    delete otpStore[cleanEmail];
+
+    const authDb = readAuthDb();
+    const now = new Date().toISOString();
+    const resolvedName = name || record.name || authDb[cleanEmail]?.name || cleanEmail.split("@")[0];
+
+    const existing: UserAuthRecord = authDb[cleanEmail] || {
+      email: cleanEmail,
+      name: resolvedName,
+      verified: true,
+      registeredAt: now,
+      lastLoginAt: now
+    };
+
+    existing.lastLoginAt = now;
+    existing.verified = true;
+    existing.name = resolvedName;
+
+    if (pin && typeof pin === "string" && pin.trim().length >= 4) {
+      const salt = crypto.randomBytes(16).toString("hex");
+      existing.salt = salt;
+      existing.pinHash = hashPinWithSalt(pin.trim(), salt);
+    }
+
+    authDb[cleanEmail] = existing;
+    writeAuthDb(authDb);
+
+    const token = crypto.randomBytes(32).toString("hex");
+
+    res.json({
+      success: true,
+      email: cleanEmail,
+      name: resolvedName,
+      hasPin: !!existing.pinHash,
+      token
+    });
+  } catch (err: any) {
+    console.error("[Auth] Error in verify-code:", err);
+    res.status(500).json({ error: "Error al verificar código: " + (err.message || err) });
+  }
+});
+
+// Endpoint: Login or Register with PIN directly
+app.post("/api/auth/login-pin", (req, res) => {
+  try {
+    const { email, pin, name } = req.body;
+    if (!email || !pin) {
+      return res.status(400).json({ error: "Se requiere correo y clave o PIN de acceso." });
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPin = pin.toString().trim();
+
+    if (cleanPin.length < 4) {
+      return res.status(400).json({ error: "El PIN o clave debe tener al menos 4 caracteres." });
+    }
+
+    const authDb = readAuthDb();
+    const now = new Date().toISOString();
+    const user = authDb[cleanEmail];
+
+    if (user && user.pinHash && user.salt) {
+      const computed = hashPinWithSalt(cleanPin, user.salt);
+      if (computed !== user.pinHash) {
+        return res.status(401).json({ error: "Clave o PIN incorrecto para este correo." });
+      }
+      user.lastLoginAt = now;
+      if (name) user.name = name.trim();
+      writeAuthDb(authDb);
+
+      const token = crypto.randomBytes(32).toString("hex");
+      return res.json({
+        success: true,
+        email: cleanEmail,
+        name: user.name,
+        token
+      });
+    } else {
+      const salt = crypto.randomBytes(16).toString("hex");
+      const pinHash = hashPinWithSalt(cleanPin, salt);
+      const resolvedName = (name && name.trim()) || user?.name || cleanEmail.split("@")[0];
+
+      authDb[cleanEmail] = {
+        email: cleanEmail,
+        name: resolvedName,
+        salt,
+        pinHash,
+        verified: true,
+        registeredAt: user?.registeredAt || now,
+        lastLoginAt: now
+      };
+      writeAuthDb(authDb);
+
+      const token = crypto.randomBytes(32).toString("hex");
+      return res.json({
+        success: true,
+        email: cleanEmail,
+        name: resolvedName,
+        token,
+        isNewPin: true
+      });
+    }
+  } catch (err: any) {
+    console.error("[Auth] Error in login-pin:", err);
+    res.status(500).json({ error: "Error en inicio con PIN: " + (err.message || err) });
+  }
+});
+
 // API endpoints for user studies history
 app.get("/api/history", (req, res) => {
   const { email } = req.query;
@@ -849,7 +1186,20 @@ app.post("/api/users/track", (req, res) => {
   }
 });
 
+const ADMIN_AUTHORIZED_EMAILS = ['martinvelozz01@gmail.com'];
+function verifyAdminRequest(req: express.Request): boolean {
+  const email = (
+    (req.headers['x-admin-email'] as string) ||
+    (req.query.adminEmail as string) ||
+    ''
+  ).toLowerCase().trim();
+  return ADMIN_AUTHORIZED_EMAILS.includes(email);
+}
+
 app.get("/api/admin/users", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
   try {
     const users = readUsersDb();
     const studiesDb = readUserDb();
@@ -951,6 +1301,9 @@ app.post("/api/feedback", (req, res) => {
 });
 
 app.get("/api/admin/feedback", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
   try {
     const feedbackList = readFeedbackDb();
     res.json({
@@ -968,6 +1321,9 @@ app.get("/api/admin/feedback", (req, res) => {
 });
 
 app.patch("/api/admin/feedback/:id", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
   try {
     const { id } = req.params;
     const { status } = req.body;

@@ -229,7 +229,7 @@ export function recordFeedbackPromptShown() {
 /**
  * Admin: Fetch all users and visitor metrics
  */
-export async function fetchAdminUsers(): Promise<{
+export async function fetchAdminUsers(adminEmail?: string): Promise<{
   users: AppUserProfile[];
   registeredUsers: AppUserProfile[];
   anonymousVisitors: AppUserProfile[];
@@ -240,7 +240,12 @@ export async function fetchAdminUsers(): Promise<{
   activeToday: number;
   recentActivity: ActivityEvent[];
 }> {
-  const res = await fetch('/api/admin/users');
+  const email = adminEmail || localStorage.getItem('user_email') || '';
+  const res = await fetch('/api/admin/users', {
+    headers: {
+      'x-admin-email': email,
+    },
+  });
   if (!res.ok) {
     throw new Error('Error al obtener lista de usuarios');
   }
@@ -250,13 +255,18 @@ export async function fetchAdminUsers(): Promise<{
 /**
  * Admin: Fetch all feedback
  */
-export async function fetchAdminFeedback(): Promise<{
+export async function fetchAdminFeedback(adminEmail?: string): Promise<{
   feedback: FeedbackItem[];
   totalCount: number;
   averageRating: number;
   critiquesCount: number;
 }> {
-  const res = await fetch('/api/admin/feedback');
+  const email = adminEmail || localStorage.getItem('user_email') || '';
+  const res = await fetch('/api/admin/feedback', {
+    headers: {
+      'x-admin-email': email,
+    },
+  });
   if (!res.ok) {
     throw new Error('Error al obtener lista de feedback');
   }
@@ -266,10 +276,14 @@ export async function fetchAdminFeedback(): Promise<{
 /**
  * Admin: Update feedback status
  */
-export async function updateFeedbackStatus(id: string, status: 'new' | 'reviewed' | 'replied') {
+export async function updateFeedbackStatus(id: string, status: 'new' | 'reviewed' | 'replied', adminEmail?: string) {
+  const email = adminEmail || localStorage.getItem('user_email') || '';
   const res = await fetch(`/api/admin/feedback/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      'x-admin-email': email,
+    },
     body: JSON.stringify({ status }),
   });
   return res.ok;
