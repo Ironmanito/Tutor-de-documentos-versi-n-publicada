@@ -315,25 +315,30 @@ function getAiClient(customKey?: string): GoogleGenAI {
 
 console.log("Lazy initialization helper for Gemini API defined. Initial key present in process.env:", !!process.env.GEMINI_API_KEY);
 
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, baseDelayMs = 1000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2, baseDelayMs = 800): Promise<T> {
   let lastError: any;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await fn();
     } catch (err: any) {
       lastError = err;
-      const status = err?.status ?? err?.response?.status;
-      const isRetryable = status === 503 || status === 429 || status === 500;
+      const status = err?.status ?? err?.response?.status ?? err?.error?.code;
+      const msg = String(err?.message || '').toLowerCase();
+      // Si la cuota del modelo se agotó (429 RESOURCE_EXHAUSTED), no malgastar reintentos; cambiar inmediatamente al siguiente modelo
+      if (status === 429 || msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('rate-limit')) {
+        throw err;
+      }
+      const isRetryable = status === 503 || msg.includes('high demand') || msg.includes('unavailable') || status === 500;
       if (!isRetryable || attempt === maxAttempts) throw err;
-      const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 400;
-      console.warn(`[Retry] Intento ${attempt}/${maxAttempts} fallido (${status}). Reintentando en ${Math.round(delay)}ms...`);
+      const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 300;
+      console.log(`[Retry] Reintento ${attempt}/${maxAttempts} (${status || 'error'}). Esperando ${Math.round(delay)}ms...`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
   throw lastError;
 }
 
-const GEMINI_TEXT_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+const GEMINI_TEXT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
 
 async function generateContentWithFallback(
   ai: GoogleGenAI,
@@ -348,7 +353,7 @@ async function generateContentWithFallback(
         model
       }), 2, 800);
     } catch (err: any) {
-      console.warn(`[Gemini Model Fallback] Modelo ${model} devolvió error (${err?.status || err?.code || err?.message}). Probando siguiente modelo...`);
+      console.log(`[Gemini Model Fallback] Modelo ${model} no disponible (${err?.status || err?.code || 'error'}). Probando siguiente modelo...`);
       lastError = err;
     }
   }
@@ -1979,31 +1984,43 @@ ${cleanText ? cleanText.substring(0, 50000) : ''}
 
         try {
           const ai = getAiClient(customKey);
-          liveSession = await ai.live.connect({
-            model: "gemini-3.1-flash-live-preview",
-            config: {
-              responseModalities: [Modality.AUDIO],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
-              },
-              tools: tools.length > 0 ? tools : undefined,
-              systemInstruction,
+          const liveConfig = {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
             },
-            callbacks: {
-              onopen: () => {
-                clientWs.send(JSON.stringify({ type: 'open' }));
-              },
-              onmessage: (serverMessage: LiveServerMessage) => {
-                clientWs.send(JSON.stringify({ type: 'message', data: serverMessage }));
-              },
-              onclose: () => {
-                clientWs.send(JSON.stringify({ type: 'close' }));
-              },
-              onerror: (err) => {
-                clientWs.send(JSON.stringify({ type: 'error', data: err?.message || String(err) }));
-              }
+            tools: tools.length > 0 ? tools : undefined,
+            systemInstruction,
+          };
+          const liveCallbacks = {
+            onopen: () => {
+              clientWs.send(JSON.stringify({ type: 'open' }));
+            },
+            onmessage: (serverMessage: LiveServerMessage) => {
+              clientWs.send(JSON.stringify({ type: 'message', data: serverMessage }));
+            },
+            onclose: () => {
+              clientWs.send(JSON.stringify({ type: 'close' }));
+            },
+            onerror: (err: any) => {
+              clientWs.send(JSON.stringify({ type: 'error', data: err?.message || String(err) }));
             }
-          });
+          };
+
+          try {
+            liveSession = await ai.live.connect({
+              model: "gemini-3.8-live",
+              config: liveConfig,
+              callbacks: liveCallbacks
+            });
+          } catch (liveErr) {
+            console.warn("gemini-3.8-live connection failed, falling back to gemini-3.1-flash-live-preview:", liveErr);
+            liveSession = await ai.live.connect({
+              model: "gemini-3.1-flash-live-preview",
+              config: liveConfig,
+              callbacks: liveCallbacks
+            });
+          }
         } catch (connErr: any) {
           console.error("Gemini Live connection failed:", connErr);
           clientWs.send(JSON.stringify({ type: 'error', data: `Error al conectar con la API de Gemini Live: ${connErr.message || connErr}` }));

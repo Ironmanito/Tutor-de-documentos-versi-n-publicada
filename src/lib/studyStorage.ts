@@ -23,36 +23,128 @@ export interface SavedStudyRecord {
 }
 
 const STORAGE_KEY_PREFIX = 'tutor_saved_studies_';
+export const ACTIVE_SESSION_KEY = 'tutor_active_study_session';
+export const GLOBAL_STUDIES_KEY = 'tutor_global_studies_index';
 
-/**
- * Gets cached studies from localStorage for instant display
- */
-export function getLocalCachedStudies(userKey?: string | null): SavedStudyRecord[] {
-  if (!userKey) return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_PREFIX + userKey.trim().toLowerCase());
-    if (raw) {
-      return JSON.parse(raw);
-    }
-    // Fallback to legacy key
-    const legacy = localStorage.getItem('tutor_user_studies');
-    if (legacy) {
-      return JSON.parse(legacy);
-    }
-  } catch (e) {
-    console.warn('[Storage] Error reading local cache:', e);
-  }
-  return [];
+export interface ActiveSessionData {
+  id?: string | null;
+  title: string;
+  files: { name: string; size: number; type?: string }[];
+  studyText: string;
+  fileTexts?: Record<string, string>;
+  activeFileNames?: string[];
+  topics?: any[];
+  unlockedTopics?: string[];
+  savedQuizQuestions?: any[];
+  suggestedOralTopics?: any[];
+  oralExamSessions?: any[];
+  activeOralSession?: any | null;
+  viewMode?: string;
+  lastSavedAt: string;
 }
 
 /**
- * Saves studies to localStorage cache
+ * Saves the active working notebook to local storage immediately.
+ * Ensures that if Render redeploys or the page refreshes, the user does not lose their current work.
+ */
+export function saveActiveSession(session: ActiveSessionData) {
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
+  } catch (e) {
+    console.warn('[Storage] Error guardando sesión activa local:', e);
+  }
+}
+
+/**
+ * Retrieves the last active study session from local storage.
+ */
+export function loadActiveSession(): ActiveSessionData | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && (data.studyText || (data.files && data.files.length > 0) || data.id || data.title)) {
+        return data;
+      }
+    }
+  } catch (e) {
+    console.warn('[Storage] Error cargando sesión activa local:', e);
+  }
+  return null;
+}
+
+/**
+ * Clears the active session from local storage (e.g. when starting a new notebook).
+ */
+export function clearActiveSession() {
+  try {
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
+  } catch (e) {
+    console.warn('[Storage] Error limpiando sesión activa local:', e);
+  }
+}
+
+/**
+ * Gets cached studies from localStorage for instant display across multiple keys
+ */
+export function getLocalCachedStudies(userKey?: string | null): SavedStudyRecord[] {
+  const result: SavedStudyRecord[] = [];
+  const seenIds = new Set<string>();
+
+  const addStudies = (studies: SavedStudyRecord[]) => {
+    if (Array.isArray(studies)) {
+      for (const s of studies) {
+        if (s && s.id && !seenIds.has(s.id)) {
+          seenIds.add(s.id);
+          result.push(s);
+        }
+      }
+    }
+  };
+
+  try {
+    // 1. User specific key
+    if (userKey) {
+      const rawUser = localStorage.getItem(STORAGE_KEY_PREFIX + userKey.trim().toLowerCase());
+      if (rawUser) addStudies(JSON.parse(rawUser));
+    }
+
+    // 2. Global registry key
+    const rawGlobal = localStorage.getItem(GLOBAL_STUDIES_KEY);
+    if (rawGlobal) addStudies(JSON.parse(rawGlobal));
+
+    // 3. Guest key
+    const rawGuest = localStorage.getItem(STORAGE_KEY_PREFIX + 'guest');
+    if (rawGuest) addStudies(JSON.parse(rawGuest));
+
+    // 4. Legacy key
+    const legacy = localStorage.getItem('tutor_user_studies');
+    if (legacy) addStudies(JSON.parse(legacy));
+  } catch (e) {
+    console.warn('[Storage] Error reading local cache:', e);
+  }
+  return result;
+}
+
+/**
+ * Saves studies to localStorage cache (user key and global index)
  */
 export function setLocalCachedStudies(userKey: string, studies: SavedStudyRecord[]) {
-  if (!userKey) return;
   try {
-    localStorage.setItem(STORAGE_KEY_PREFIX + userKey.trim().toLowerCase(), JSON.stringify(studies));
+    const cleanUser = userKey ? userKey.trim().toLowerCase() : 'guest';
+    localStorage.setItem(STORAGE_KEY_PREFIX + cleanUser, JSON.stringify(studies));
     localStorage.setItem('tutor_user_studies', JSON.stringify(studies));
+
+    // Also update global master registry merging any existing studies
+    const currentGlobal = getLocalCachedStudies();
+    const globalIds = new Set(studies.map(s => s.id));
+    const mergedGlobal = [...studies];
+    for (const g of currentGlobal) {
+      if (!globalIds.has(g.id)) {
+        mergedGlobal.push(g);
+      }
+    }
+    localStorage.setItem(GLOBAL_STUDIES_KEY, JSON.stringify(mergedGlobal));
   } catch (e) {
     console.warn('[Storage] Error saving local cache:', e);
   }
@@ -151,6 +243,24 @@ export async function saveStudyNotebook(
       updated = [completeStudy, ...cached];
     }
     setLocalCachedStudies(userKey, updated);
+
+    // Also persist as active session so reload or redeploy immediately restores it
+    saveActiveSession({
+      id: completeStudy.id,
+      title: completeStudy.title,
+      files: completeStudy.files || [],
+      studyText: completeStudy.studyText || '',
+      fileTexts: completeStudy.fileTexts || {},
+      activeFileNames: completeStudy.activeFileNames || [],
+      topics: completeStudy.topics || [],
+      unlockedTopics: completeStudy.unlockedTopics || [],
+      savedQuizQuestions: completeStudy.savedQuizQuestions || [],
+      suggestedOralTopics: completeStudy.suggestedOralTopics || [],
+      oralExamSessions: completeStudy.oralExamSessions || [],
+      activeOralSession: completeStudy.activeOralSession || null,
+      viewMode: completeStudy.viewMode || 'setup',
+      lastSavedAt: nowIso
+    });
   } catch (e) {
     console.warn('[Storage] Error actualizando cache local:', e);
   }
@@ -237,6 +347,23 @@ export async function loadUserNotebooks(
       }
     } catch (err) {
       console.warn('[Server History] Error consultando /api/history:', err);
+    }
+
+    // 2b. SERVER REHYDRATION (Fix for Render redeploy data loss):
+    // If the server container was just rebuilt on Render, its local disk was wiped clean.
+    // We immediately push our persistent local/cloud studies back to the server so /api/history has them!
+    if (studiesMap.size > 0 && serverStudies.length < studiesMap.size) {
+      const serverIds = new Set(serverStudies.map(s => s.id));
+      for (const [id, study] of studiesMap.entries()) {
+        if (!serverIds.has(id)) {
+          console.log(`[Auto-Rehydrate] Resincronizando cuaderno local "${study.title}" con el servidor...`);
+          fetch('/api/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, study })
+          }).catch(e => console.warn('[Auto-Rehydrate] Error rehidratando servidor:', e));
+        }
+      }
     }
   }
 

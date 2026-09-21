@@ -6,7 +6,7 @@ import { cn } from './lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { OralEvaluatorSetup, OralEvaluatorSession, OralExamSession, SuggestedOralTopic } from './components/OralEvaluator';
 import { googleSignIn, initAuth, logoutGoogle, setCachedAccessToken, auth } from './lib/firebase';
-import { saveStudyNotebook, loadUserNotebooks, deleteStudyNotebook, SavedStudyRecord } from './lib/studyStorage';
+import { saveStudyNotebook, loadUserNotebooks, deleteStudyNotebook, SavedStudyRecord, saveActiveSession, loadActiveSession, clearActiveSession } from './lib/studyStorage';
 import { listDriveFiles, importDriveFile, DriveFile } from './lib/drive';
 import { User } from 'firebase/auth';
 import { AppLogo } from './components/AppLogo';
@@ -14,7 +14,7 @@ import { GoldenRatioIconPreview } from './components/GoldenRatioIconPreview';
 import { GoldenRatioWatermark } from './components/GoldenRatioWatermark';
 import { FeedbackModal } from './components/FeedbackModal';
 import { AdminPanel } from './components/AdminPanel';
-import { UploadProgressAnimation } from './components/UploadProgressAnimation';
+import { UploadProgressAnimation, FileProgressItem } from './components/UploadProgressAnimation';
 import { trackUserActivity, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
 
 class WebSocketSession {
@@ -137,6 +137,7 @@ export default function App() {
   const [extractingFileIndex, setExtractingFileIndex] = useState(1);
   const [extractingTotalFiles, setExtractingTotalFiles] = useState(1);
   const [extractingFileNamesList, setExtractingFileNamesList] = useState<string[]>([]);
+  const [filesProgress, setFilesProgress] = useState<FileProgressItem[]>([]);
   const [studyText, setStudyText] = useState<string>('');
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
   const [activeFileNames, setActiveFileNames] = useState<string[]>([]);
@@ -167,6 +168,7 @@ export default function App() {
     }
     setIsExtracting(false);
     setExtractProgress(0);
+    setFilesProgress([]);
     setCurrentExtractingFile('');
     setExtractingFileIndex(1);
     showToast('info', 'Carga cancelada', 'Se detuvo el procesamiento del documento.');
@@ -421,7 +423,61 @@ export default function App() {
     }
   }, [authCountdown]);
 
-  // Carga inicial de cuadernos y persistencia universal
+  // Carga inicial de cuadernos y recuperación de sesión activa (evita pérdida de datos al reiniciar el servidor en Render)
+  useEffect(() => {
+    // 1. Recuperar cuaderno activo guardado si la página se recargó o Render se reinició
+    const savedActive = loadActiveSession();
+    if (savedActive && (savedActive.studyText || (savedActive.files && savedActive.files.length > 0) || savedActive.id || savedActive.title)) {
+      console.log("[Active Session] Restaurando cuaderno activo tras reinicio/recarga:", savedActive.title);
+      if (savedActive.id) setActiveStudyId(savedActive.id);
+      if (savedActive.title) {
+        setActiveStudyTitle(savedActive.title);
+        setNewStudyTitle(savedActive.title);
+      }
+      if (savedActive.studyText) setStudyText(savedActive.studyText);
+      if (savedActive.files && Array.isArray(savedActive.files)) setFiles(savedActive.files as any);
+      if (savedActive.fileTexts) setFileTexts(savedActive.fileTexts);
+      if (savedActive.activeFileNames) setActiveFileNames(savedActive.activeFileNames);
+      if (savedActive.topics && Array.isArray(savedActive.topics) && savedActive.topics.length > 0) setTopics(savedActive.topics);
+      if (savedActive.unlockedTopics) setUnlockedTopics(savedActive.unlockedTopics);
+      if (savedActive.savedQuizQuestions) setSavedQuizQuestions(savedActive.savedQuizQuestions);
+      if (savedActive.suggestedOralTopics) setSuggestedOralTopics(savedActive.suggestedOralTopics);
+      if (savedActive.oralExamSessions) setOralExamSessions(savedActive.oralExamSessions);
+      if (savedActive.activeOralSession) setActiveOralSession(savedActive.activeOralSession);
+      if (savedActive.viewMode && savedActive.viewMode !== 'setup') setViewMode(savedActive.viewMode as any);
+    }
+
+    const activeEmail = userEmail || driveUser?.email || localStorage.getItem('user_email');
+    if (activeEmail) {
+      fetchUserHistory(activeEmail, driveUser?.uid || auth.currentUser?.uid);
+    } else {
+      fetchUserHistory('guest');
+    }
+  }, []);
+
+  // Auto-guardar la sesión activa en tiempo real ante cualquier cambio relevante
+  useEffect(() => {
+    if (studyText || (files && files.length > 0) || activeStudyId || activeStudyTitle) {
+      saveActiveSession({
+        id: activeStudyId,
+        title: activeStudyTitle || (files[0]?.name ? files[0].name.replace(/\.[^/.]+$/, '') : 'Cuaderno de estudio'),
+        files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
+        studyText,
+        fileTexts,
+        activeFileNames,
+        topics,
+        unlockedTopics,
+        savedQuizQuestions,
+        suggestedOralTopics,
+        oralExamSessions,
+        activeOralSession,
+        viewMode,
+        lastSavedAt: new Date().toISOString()
+      });
+    }
+  }, [studyText, files, fileTexts, activeFileNames, topics, unlockedTopics, savedQuizQuestions, suggestedOralTopics, oralExamSessions, activeOralSession, viewMode, activeStudyId, activeStudyTitle]);
+
+  // Cargar historial cuando cambie de usuario
   useEffect(() => {
     const activeEmail = userEmail || driveUser?.email || localStorage.getItem('user_email');
     if (activeEmail) {
@@ -473,6 +529,7 @@ export default function App() {
       setShowBillingModal(true);
       return;
     }
+    clearActiveSession();
     setFiles([]);
     setFileTexts({});
     setActiveFileNames([]);
@@ -1198,16 +1255,27 @@ export default function App() {
     setIsExtracting(true);
     setExtractingTotalFiles(validFiles.length);
     setExtractingFileNamesList(validFiles.map(f => f.name));
-    setExtractProgress(12);
+    setExtractProgress(8);
+
+    // Inicializar barras de progreso individuales para cada documento seleccionado
+    const initialFilesProgress: FileProgressItem[] = validFiles.map((f, idx) => ({
+      id: `${f.name}_${f.size}_${idx}`,
+      name: f.name,
+      size: f.size,
+      progress: 0,
+      status: idx === 0 ? 'uploading' : 'pending',
+      statusText: idx === 0 ? 'Iniciando lectura y carga...' : 'En cola de espera'
+    }));
+    setFilesProgress(initialFilesProgress);
 
     const abortController = new AbortController();
     extractionAbortControllerRef.current = abortController;
 
-    let simulatedProgress = 12;
+    let simulatedProgress = 8;
     const progressInterval = setInterval(() => {
-      simulatedProgress = Math.min(simulatedProgress + Math.floor(Math.random() * 5) + 2, 92);
-      setExtractProgress(simulatedProgress);
-    }, 280);
+      simulatedProgress = Math.min(simulatedProgress + Math.floor(Math.random() * 3) + 1, 92);
+      setExtractProgress(prev => Math.max(prev, simulatedProgress));
+    }, 350);
 
     try {
       const newFileTexts = { ...fileTexts };
@@ -1221,12 +1289,56 @@ export default function App() {
         setCurrentExtractingFile(file.name);
         setExtractingFileIndex(i + 1);
 
+        // Actualizar estado del archivo actual a cargando
+        setFilesProgress(prev => {
+          const next = [...prev];
+          if (next[i]) {
+            next[i] = {
+              ...next[i],
+              status: 'uploading',
+              statusText: 'Iniciando procesamiento...'
+            };
+          }
+          return next;
+        });
+
         try {
           let text = '';
           if ((file as any).preExtractedText) {
             text = (file as any).preExtractedText;
+            setFilesProgress(prev => {
+              const next = [...prev];
+              if (next[i]) {
+                next[i] = {
+                  ...next[i],
+                  progress: 100,
+                  status: 'completed',
+                  statusText: '¡Contenido importado con éxito!'
+                };
+              }
+              return next;
+            });
           } else {
-            text = await extractTextFromFile(file, abortController.signal);
+            text = await extractTextFromFile(file, abortController.signal, (pct, statusText) => {
+              // Actualización en tiempo real de la barra individual de este documento
+              setFilesProgress(prev => {
+                const next = [...prev];
+                if (next[i]) {
+                  next[i] = {
+                    ...next[i],
+                    progress: pct,
+                    status: pct >= 100 ? 'completed' : (pct > 20 ? 'extracting' : 'uploading'),
+                    statusText: statusText
+                  };
+                }
+                return next;
+              });
+
+              // Progreso global armónico ponderado por número de documentos
+              const fileWeight = 100 / validFiles.length;
+              const currentTotal = Math.min(99, Math.round((i * fileWeight) + (pct * fileWeight / 100)));
+              setExtractProgress(prev => Math.max(prev, currentTotal));
+            });
           }
 
           if (abortController.signal.aborted) break;
@@ -1242,10 +1354,29 @@ export default function App() {
           }
           successfullyExtractedFiles.push(file);
 
-          // Boost progress dynamically based on completed files
-          const completedFraction = Math.round(((i + 1) / validFiles.length) * 88);
-          simulatedProgress = Math.max(simulatedProgress, completedFraction);
-          setExtractProgress(simulatedProgress);
+          // Marcar el archivo como 100% completado en su barra individual y pasar al siguiente
+          setFilesProgress(prev => {
+            const next = [...prev];
+            if (next[i]) {
+              next[i] = {
+                ...next[i],
+                progress: 100,
+                status: 'completed',
+                statusText: '¡Texto extraído con éxito!'
+              };
+            }
+            if (next[i + 1]) {
+              next[i + 1] = {
+                ...next[i + 1],
+                status: 'uploading',
+                statusText: 'Iniciando lectura del documento...'
+              };
+            }
+            return next;
+          });
+
+          const completedFraction = Math.round(((i + 1) / validFiles.length) * 100);
+          setExtractProgress(completedFraction);
         } catch (fileError: any) {
           if (fileError?.name === 'AbortError' || abortController.signal.aborted) {
             console.log('Extracción cancelada por el usuario.');
@@ -1253,6 +1384,20 @@ export default function App() {
           }
           console.error(`Error extracting file ${file.name}:`, fileError);
           failedExtractions.push({ name: file.name, error: fileError.message || String(fileError) });
+          
+          setFilesProgress(prev => {
+            const next = [...prev];
+            if (next[i]) {
+              next[i] = {
+                ...next[i],
+                progress: 100,
+                status: 'error',
+                statusText: fileError.message || 'Error al procesar el archivo',
+                error: fileError.message
+              };
+            }
+            return next;
+          });
           showToast('error', `Aviso sobre "${file.name}"`, fileError.message || 'Error al procesar el archivo');
         }
       }
@@ -1273,7 +1418,7 @@ export default function App() {
       // Smooth completion
       clearInterval(progressInterval);
       setExtractProgress(100);
-      await new Promise((res) => setTimeout(res, 550));
+      await new Promise((res) => setTimeout(res, 600));
     } catch (error: any) {
       if (error?.name === 'AbortError' || abortController.signal.aborted) {
         console.log('Proceso de extracción cancelado por el usuario.');
@@ -1288,6 +1433,7 @@ export default function App() {
       clearInterval(progressInterval);
       setIsExtracting(false);
       setExtractProgress(0);
+      setFilesProgress([]);
       setCurrentExtractingFile('');
       setExtractingFileIndex(1);
     }
@@ -2037,6 +2183,7 @@ export default function App() {
                         totalFiles={extractingTotalFiles}
                         allFileNames={extractingFileNamesList}
                         progress={extractProgress}
+                        filesProgress={filesProgress}
                         onCancel={cancelExtraction}
                       />
                     ) : (

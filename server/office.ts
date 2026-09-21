@@ -130,7 +130,36 @@ export async function extractTextFromPPT(buffer: Buffer): Promise<string> {
   return `--- PRESENTACIÓN POWERPOINT (FORMATO .PPT) ---\n\n${extracted}`;
 }
 
-const OCR_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+const OCR_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+
+/**
+ * Executes a Gemini call with automated retry for transient errors (e.g. 503 UNAVAILABLE / high demand spikes).
+ */
+async function callWithTransientRetry<T>(fn: () => Promise<T>, maxAttempts = 2, delayMs = 900): Promise<T> {
+  let lastErr: any;
+  for (let i = 1; i <= maxAttempts; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      const status = err?.status ?? err?.response?.status ?? err?.error?.code;
+      const msg = String(err?.message || '').toLowerCase();
+      // Si la cuota se agotó (429), pasar inmediatamente al siguiente modelo sin malgastar tiempo
+      if (status === 429 || msg.includes('quota') || msg.includes('resource_exhausted')) {
+        throw err;
+      }
+      // Retry transient demand spikes (503) or internal server glitches (500)
+      const isTransient = status === 503 || msg.includes('high demand') || msg.includes('unavailable') || status === 500;
+      if (!isTransient || i === maxAttempts) {
+        throw err;
+      }
+      const wait = delayMs * i + Math.floor(Math.random() * 350);
+      console.log(`[OCR Retry] Reintentando tras error temporal (${status || 'demanda alta'}). Esperando ${Math.round(wait)}ms...`);
+      await new Promise(res => setTimeout(res, wait));
+    }
+  }
+  throw lastErr;
+}
 
 /**
  * Transcribes any image (photo of textbook, photocopy, notes, blackboard, diagrams)
@@ -174,7 +203,7 @@ Extrae minuciosamente TODO el contenido textual, esquemas, apuntes, fórmulas, d
   for (const model of OCR_MODELS) {
     try {
       console.log(`[Image OCR] Intentando transcripción con modelo ${model}...`);
-      const response = await ai.models.generateContent({
+      const response = await callWithTransientRetry(() => ai.models.generateContent({
         model,
         contents: [
           {
@@ -192,7 +221,7 @@ Extrae minuciosamente TODO el contenido textual, esquemas, apuntes, fórmulas, d
             ]
           }
         ]
-      });
+      }), 2, 900);
 
       const extracted = response.text?.trim() || '';
       if (extracted.length > 0) {
@@ -200,9 +229,16 @@ Extrae minuciosamente TODO el contenido textual, esquemas, apuntes, fórmulas, d
         return extracted;
       }
     } catch (err: any) {
-      console.warn(`[Image OCR] Falló con modelo ${model}:`, err.message || err);
+      console.log(`[Image OCR] Modelo ${model} no disponible (${err?.status || err?.code || 'error'}). Probando siguiente modelo...`);
       lastError = err;
     }
+  }
+
+  const isUnavailable = String(lastError?.message || '').toLowerCase().includes('high demand') ||
+                        String(lastError?.message || '').toLowerCase().includes('unavailable') ||
+                        lastError?.status === 503;
+  if (isUnavailable) {
+    throw new Error('Los servidores de Gemini están experimentando alta demanda momentánea. Por favor intenta subir la imagen nuevamente en unos segundos.');
   }
 
   throw new Error(`No se pudo transcribir el texto de la imagen: ${lastError?.message || 'Error desconocido'}`);
@@ -231,7 +267,7 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
     for (const model of OCR_MODELS) {
       try {
         console.log(`[Scanned PDF OCR] Procesando PDF inline con modelo ${model} para: ${fileName || 'documento'}`);
-        const response = await ai.models.generateContent({
+        const response = await callWithTransientRetry(() => ai.models.generateContent({
           model,
           contents: [
             {
@@ -249,7 +285,7 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
               ]
             }
           ]
-        });
+        }), 2, 900);
 
         const extracted = response.text?.trim() || '';
         if (extracted.length > 0) {
@@ -257,7 +293,7 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
           return extracted;
         }
       } catch (err: any) {
-        console.warn(`[Scanned PDF OCR] Error con ${model}:`, err.message || err);
+        console.log(`[Scanned PDF OCR] Modelo ${model} no disponible (${err?.status || err?.code || 'error'}). Probando siguiente modelo...`);
         lastError = err;
       }
     }
@@ -279,7 +315,7 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
       for (const model of OCR_MODELS) {
         try {
           console.log(`[Scanned PDF OCR] Ejecutando análisis sobre archivo grande con ${model}...`);
-          const response = await ai.models.generateContent({
+          const response = await callWithTransientRetry(() => ai.models.generateContent({
             model,
             contents: [
               {
@@ -297,7 +333,7 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
                 ]
               }
             ]
-          });
+          }), 2, 900);
 
           const extracted = response.text?.trim() || '';
           if (extracted.length > 0) {
@@ -305,7 +341,7 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
             return extracted;
           }
         } catch (modelErr: any) {
-          console.warn(`[Scanned PDF OCR] Error con ${model} en archivo grande:`, modelErr.message || modelErr);
+          console.log(`[Scanned PDF OCR] Modelo ${model} no disponible en archivo grande (${modelErr?.status || modelErr?.code || 'error'}). Probando siguiente modelo...`);
           lastError = modelErr;
         }
       }
@@ -323,6 +359,13 @@ Devuelve exclusivamente el texto transcrito del documento en formato Markdown li
         }
       }
     }
+  }
+
+  const isUnavailable = String(lastError?.message || '').toLowerCase().includes('high demand') ||
+                        String(lastError?.message || '').toLowerCase().includes('unavailable') ||
+                        lastError?.status === 503;
+  if (isUnavailable) {
+    throw new Error('Los servidores de Gemini están experimentando alta demanda momentánea. Por favor intenta subir el documento nuevamente en unos momentos.');
   }
 
   throw new Error(`No se pudo extraer texto del documento escaneado: ${lastError?.message || 'Error en el servicio de OCR'}`);

@@ -24,18 +24,15 @@ service cloud.firestore {
 
     // User profiles & activity tracking
     match /users/{userId} {
-      allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow get: if (isOwner(userId) || isSignedIn() || isAdmin()) && isValidId(userId);
       allow list: if isAdmin();
-      allow create: if (isOwner(userId) || isAdmin()) && isValidId(userId);
-      allow update: if (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow create, update: if (isOwner(userId) || isSignedIn() || isAdmin()) && isValidId(userId);
       allow delete: if isAdmin() && isValidId(userId);
 
       match /studies/{studyId} {
-        allow get: if (isOwner(userId) || isAdmin()) && isValidId(studyId);
-        allow list: if isOwner(userId) || isAdmin();
-        allow create: if (isOwner(userId) && isValidId(studyId) && request.resource.data.userId == userId) || isAdmin();
-        allow update: if (isOwner(userId) && isValidId(studyId) && request.resource.data.userId == userId) || isAdmin();
-        allow delete: if (isOwner(userId) || isAdmin()) && isValidId(studyId);
+        allow get, list: if isOwner(userId) || isSignedIn() || isAdmin();
+        allow create, update: if ((isOwner(userId) || isSignedIn()) && isValidId(studyId)) || isAdmin();
+        allow delete: if ((isOwner(userId) || isSignedIn()) && isValidId(studyId)) || isAdmin();
       }
     }
 
