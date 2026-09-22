@@ -25,6 +25,7 @@ import {
 } from "./server/storage.ts";
 import {
   extractTextFromPPTX,
+  extractPPTXWithSlidesAndImages,
   extractTextFromPPT,
   extractTextFromImage,
   extractTextFromScannedPDF
@@ -264,6 +265,55 @@ readFeedbackDbFromGCS().then(gcsFeedback => {
   }
 }).catch(() => {});
 
+// --- Admin Sessions Analytics Database (Behavioral Surplus & Psychometrics) ---
+const ADMIN_SESSIONS_PATH = path.join(process.cwd(), "admin_sessions_db.json");
+
+interface SessionReportItem {
+  id: string;
+  sessionId: string;
+  visitorId: string;
+  userEmail?: string;
+  userName?: string;
+  device: string;
+  iniciada_en: string;
+  finalizada_en: string;
+  duracion_segundos: number;
+  datos_servicio: any;
+  excedente_conductual: any;
+  analisis_cognitivo?: {
+    nivel_certeza: number;
+    nivel_vacilacion: number;
+    indice_fatiga: number;
+    diagnostico_emocional: string;
+    resumen_ejecutivo: string;
+    desvios_detectados: string;
+    patrones_detectados: string[];
+    recomendacion_pedagogica: string;
+  };
+  createdAt: string;
+}
+
+function readSessionsDb(): SessionReportItem[] {
+  try {
+    if (!fs.existsSync(ADMIN_SESSIONS_PATH)) {
+      return [];
+    }
+    const data = fs.readFileSync(ADMIN_SESSIONS_PATH, "utf8");
+    return JSON.parse(data) || [];
+  } catch (err) {
+    console.error("Error reading sessions DB:", err);
+    return [];
+  }
+}
+
+function writeSessionsDb(items: SessionReportItem[]) {
+  try {
+    fs.writeFileSync(ADMIN_SESSIONS_PATH, JSON.stringify(items, null, 2), "utf8");
+  } catch (err) {
+    console.error("Error writing sessions DB:", err);
+  }
+}
+
 let aiClient: GoogleGenAI | null = null;
 
 function getApiKey(): string | undefined {
@@ -457,6 +507,8 @@ app.post("/api/extract-pdf", async (req, res) => {
     const isImage = (mimeType && mimeType.startsWith('image/')) || 
                     /\.(png|jpe?g|webp|bmp|tiff?|gif|heic)$/i.test(lowerName);
 
+    let slidesData: any[] | undefined = undefined;
+
     if (isWord) {
       if (lowerName.endsWith('.doc') && !lowerName.endsWith('.docx')) {
         return res.status(400).json({ 
@@ -467,8 +519,10 @@ app.post("/api/extract-pdf", async (req, res) => {
       const result = await mammoth.extractRawText({ buffer: buffer });
       text = result.value || '';
     } else if (isPPTX) {
-      console.log(`[Server PowerPoint Extraction] Procesando presentación moderna .pptx para: ${cleanFileName}`);
-      text = await extractTextFromPPTX(buffer);
+      console.log(`[Server PowerPoint Extraction] Procesando presentación moderna .pptx con diapositivas e imágenes para: ${cleanFileName}`);
+      const pptxRes = await extractPPTXWithSlidesAndImages(buffer);
+      text = pptxRes.text;
+      slidesData = pptxRes.slides;
     } else if (isPPT) {
       console.log(`[Server PowerPoint Extraction] Procesando presentación .ppt para: ${cleanFileName}`);
       text = await extractTextFromPPT(buffer);
@@ -544,9 +598,11 @@ app.post("/api/extract-pdf", async (req, res) => {
       console.warn("[Server Extraction] Advertencia al respaldar en GCS:", gcsErr.message || gcsErr);
     }
 
-    console.log(`[Server Extraction] Extracción exitosa de: ${cleanFileName}. Caracteres extraídos: ${text.length}`);
+    console.log(`[Server Extraction] Extracción exitosa de: ${cleanFileName}. Caracteres extraídos: ${text.length}${slidesData ? ` (${slidesData.length} diapositivas)` : ''}`);
     res.json({ 
       text,
+      slides: slidesData,
+      isPresentation: !!slidesData,
       gcsUri: gcsResult?.gcsUri,
       publicUrl: gcsResult?.publicUrl,
       gcsUploaded: !!gcsResult?.success
@@ -1361,6 +1417,169 @@ app.patch("/api/admin/feedback/:id", (req, res) => {
     console.error("[Admin Feedback Patch] Error:", error);
     res.status(500).json({ error: error.message || "Error al actualizar feedback" });
   }
+});
+
+// ==========================================
+// SESSION TELEMETRY & COGNITIVE SURPLUS (ZUBOFF)
+// ==========================================
+
+app.post("/api/analytics/session-end", async (req, res) => {
+  try {
+    const payload = req.body;
+    if (!payload || !payload.sessionId) {
+      return res.status(400).json({ error: "Payload de sesión inválido" });
+    }
+
+    const { sessionId, visitorId, userEmail, userName, device, iniciada_en, finalizada_en, datos_servicio, excedente_conductual } = payload;
+    const duracion_segundos = Math.round((excedente_conductual?.duracion_total_sesion_ms || 0) / 1000);
+
+    // Heurística base de respaldo
+    const avgLatency = excedente_conductual?.latencia_promedio_decision_ms || 0;
+    const backspaces = excedente_conductual?.titubeos_correccion_total || 0;
+    const tabSwitches = excedente_conductual?.cambios_de_pestana_total || 0;
+    const wpm = excedente_conductual?.metricas_lectura?.wpm_promedio || 0;
+
+    let baseCerteza = 75;
+    let baseVacilacion = 20;
+    let baseFatiga = 15;
+
+    if (avgLatency > 5000) {
+      baseVacilacion += 35;
+      baseCerteza -= 25;
+    } else if (avgLatency > 0 && avgLatency < 1800) {
+      baseCerteza += 15;
+    }
+
+    if (backspaces > 4) {
+      baseVacilacion += Math.min(35, backspaces * 5);
+    }
+    if (tabSwitches > 1) {
+      baseFatiga += Math.min(45, tabSwitches * 12);
+    }
+    if (duracion_segundos > 900) {
+      baseFatiga += 20;
+    }
+
+    let diagnostico = "Interacción reflexiva y equilibrada";
+    if (baseVacilacion > 50) diagnostico = "Vacilación recurrente / Inseguridad conceptual";
+    if (baseFatiga > 50) diagnostico = "Fatiga cognitiva / Dispersión por cambios de ventana";
+    if (baseCerteza > 80 && baseVacilacion < 25) diagnostico = "Alta confianza y dominio fluido";
+
+    let analisisCognitivo: any = {
+      nivel_certeza: Math.min(100, Math.max(10, Math.round(baseCerteza))),
+      nivel_vacilacion: Math.min(100, Math.max(5, Math.round(baseVacilacion))),
+      indice_fatiga: Math.min(100, Math.max(5, Math.round(baseFatiga))),
+      diagnostico_emocional: diagnostico,
+      resumen_ejecutivo: `Sesión de ${Math.max(1, Math.round(duracion_segundos / 60))} min con ${datos_servicio?.preguntas_respondidas_count || 0} preguntas respondidas, ${datos_servicio?.examenes_orales_count || 0} examen oral y ${datos_servicio?.documentos_leidos_count || 0} lecturas.`,
+      desvios_detectados: tabSwitches > 0 ? `El usuario alternó a otras aplicaciones en Android ${tabSwitches} vez/veces durante el estudio.` : "Sin desvíos notables de atención.",
+      patrones_detectados: [
+        `Velocidad de interacción: ${excedente_conductual?.velocidad_interaccion_predominante || 'regular'}`,
+        avgLatency > 0 ? `Latencia promedio de decisión: ${avgLatency} ms` : 'Sin evaluación cronometrada',
+        wpm > 0 ? `Ritmo de lectura: ~${wpm} palabras por minuto` : 'Sin lecturas extensas registradas'
+      ],
+      recomendacion_pedagogica: baseVacilacion > 50 
+        ? "Reforzar con preguntas guiadas o tarjetas conceptuales previas a evaluaciones formales." 
+        : "Fomentar mayor profundidad conceptual mediante preguntas de deducción e implicación."
+    };
+
+    // Enriquecer con Gemini si hay API key
+    const apiKey = getApiKey();
+    if (apiKey) {
+      try {
+        const ai = getAiClient();
+        const prompt = `Eres un agente analítico especializado en interacción persona-sistema y sociología digital, basado en los postulados de Shoshana Zuboff sobre el excedente conductual (behavioral surplus) y la psicometría del aprendizaje.
+
+Analiza el siguiente paquete de interacción:
+1. "datos_servicio": ${JSON.stringify(datos_servicio)}
+2. "excedente_conductual": ${JSON.stringify(excedente_conductual)}
+
+Genera un diagnóstico estricto en JSON con:
+- "nivel_certeza": número del 0 al 100
+- "nivel_vacilacion": número del 0 al 100
+- "indice_fatiga": número del 0 al 100
+- "diagnostico_emocional": frase sintética (ej: "Confianza alta", "Vacilación reflexiva", "Ansiedad por inmediatez", "Fatiga cognitiva por dispersión")
+- "resumen_ejecutivo": síntesis clara de la sesión
+- "desvios_detectados": desvíos entre la tarea formal y el comportamiento residual (ej. pausas, cambios de pestaña, titubeos)
+- "patrones_detectados": array de 3 strings con observaciones clave derivadas de los milisegundos y cadencia
+- "recomendacion_pedagogica": recomendación orientada al tutor o administrador para apoyar al usuario`;
+
+        const response = await generateContentWithFallback(ai, {
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.3
+          }
+        });
+
+        const rawText = response.text ? response.text.trim() : '';
+        if (rawText) {
+          const parsed = JSON.parse(rawText);
+          if (parsed.nivel_certeza !== undefined) {
+            analisisCognitivo = {
+              nivel_certeza: Number(parsed.nivel_certeza) || analisisCognitivo.nivel_certeza,
+              nivel_vacilacion: Number(parsed.nivel_vacilacion) || analisisCognitivo.nivel_vacilacion,
+              indice_fatiga: Number(parsed.indice_fatiga) || analisisCognitivo.indice_fatiga,
+              diagnostico_emocional: parsed.diagnostico_emocional || analisisCognitivo.diagnostico_emocional,
+              resumen_ejecutivo: parsed.resumen_ejecutivo || analisisCognitivo.resumen_ejecutivo,
+              desvios_detectados: parsed.desvios_detectados || analisisCognitivo.desvios_detectados,
+              patrones_detectados: Array.isArray(parsed.patrones_detectados) ? parsed.patrones_detectados : analisisCognitivo.patrones_detectados,
+              recomendacion_pedagogica: parsed.recomendacion_pedagogica || analisisCognitivo.recomendacion_pedagogica
+            };
+          }
+        }
+      } catch (geminiErr: any) {
+        console.warn("[Analytics Gemini Inference] Fallback to heuristic metrics:", geminiErr.message || geminiErr);
+      }
+    }
+
+    const sessions = readSessionsDb();
+    const newReport: SessionReportItem = {
+      id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      sessionId,
+      visitorId: visitorId || 'anon',
+      userEmail: userEmail || undefined,
+      userName: userName || (userEmail ? userEmail.split('@')[0] : `Visitante #${(visitorId || '').replace('vis_', '').substring(0, 5)}`),
+      device: device || 'Web / Android',
+      iniciada_en: iniciada_en || new Date().toISOString(),
+      finalizada_en: finalizada_en || new Date().toISOString(),
+      duracion_segundos,
+      datos_servicio: datos_servicio || {},
+      excedente_conductual: excedente_conductual || {},
+      analisis_cognitivo: analisisCognitivo,
+      createdAt: new Date().toISOString()
+    };
+
+    sessions.unshift(newReport);
+    if (sessions.length > 200) {
+      sessions.pop();
+    }
+    writeSessionsDb(sessions);
+
+    console.log(`[Analytics] Sesión guardada: ${sessionId} (${duracion_segundos}s) - Certeza: ${analisisCognitivo.nivel_certeza}% - Vacilación: ${analisisCognitivo.nivel_vacilacion}%`);
+    res.json({ success: true, report: newReport });
+  } catch (err: any) {
+    console.error("[Analytics] Error in session-end:", err);
+    res.status(500).json({ error: err.message || "Error registrando sesión" });
+  }
+});
+
+app.get("/api/admin/sessions", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
+  const sessions = readSessionsDb();
+  res.json({ sessions });
+});
+
+app.delete("/api/admin/sessions/:id", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
+  const { id } = req.params;
+  let sessions = readSessionsDb();
+  sessions = sessions.filter(s => s.id !== id);
+  writeSessionsDb(sessions);
+  res.json({ success: true });
 });
 
 function cleanJsonText(rawText: string): string {

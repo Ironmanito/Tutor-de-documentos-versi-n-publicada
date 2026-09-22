@@ -256,6 +256,9 @@ export async function extractTextFromPDF(
     (file as any).gcsUri = data.gcsUri;
     (file as any).publicUrl = data.publicUrl;
   }
+  if (data.slides) {
+    (file as any).slides = data.slides;
+  }
   return data.text;
 }
 

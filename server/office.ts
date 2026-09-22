@@ -18,11 +18,30 @@ function decodeXmlEntities(str: string): string {
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
+export interface PPTXSlide {
+  slideNumber: number;
+  title: string;
+  content: string;
+  notes?: string;
+  images: string[]; // base64 data URLs for embedded diagrams/images
+}
+
+export interface PPTXExtractionResult {
+  text: string;
+  slides: PPTXSlide[];
+  isPresentation: boolean;
+}
+
 /**
- * Extracts all slide text, headings, bullet points, tables, and speaker notes
- * from modern Microsoft PowerPoint (.pptx) presentations.
+ * Extracts all slide text, headings, bullet points, tables, speaker notes
+ * and embedded images from modern Microsoft PowerPoint (.pptx) presentations.
  */
 export async function extractTextFromPPTX(buffer: Buffer): Promise<string> {
+  const result = await extractPPTXWithSlidesAndImages(buffer);
+  return result.text;
+}
+
+export async function extractPPTXWithSlidesAndImages(buffer: Buffer): Promise<PPTXExtractionResult> {
   const zip = await JSZip.loadAsync(buffer);
   
   // Find all slide XML files
@@ -46,6 +65,8 @@ export async function extractTextFromPPTX(buffer: Buffer): Promise<string> {
     slideFiles.push(...anySlide);
   }
 
+  // Pre-load media relationship files (rels) to map images to slides
+  const slidesData: PPTXSlide[] = [];
   const slideTexts: string[] = [];
 
   for (let i = 0; i < slideFiles.length; i++) {
@@ -62,6 +83,10 @@ export async function extractTextFromPPTX(buffer: Buffer): Promise<string> {
       .replace(/[ \t]+/g, ' ')
       .replace(/\n\s*\n/g, '\n')
       .trim();
+
+    // Try to extract slide title (first line or first heading)
+    const lines = cleanedSlide.split('\n').map(l => l.trim()).filter(Boolean);
+    const slideTitle = lines.length > 0 ? lines[0].substring(0, 100) : `Diapositiva ${slideNum}`;
 
     // Check for corresponding speaker notes
     const notesPath = `ppt/notesSlides/notesSlide${slideNum}.xml`;
@@ -82,20 +107,70 @@ export async function extractTextFromPPTX(buffer: Buffer): Promise<string> {
       }
     }
 
-    if (cleanedSlide.length > 0 || notesText.length > 0) {
-      let section = `--- DIAPOSITIVA ${slideNum} ---\n${cleanedSlide}`;
+    // Extract images embedded in this slide via rels
+    const slideFileName = slidePath.split('/').pop() || `slide${slideNum}.xml`;
+    const relsPath = `ppt/slides/_rels/${slideFileName}.rels`;
+    const slideImages: string[] = [];
+
+    if (zip.files[relsPath]) {
+      try {
+        const relsXml = await zip.files[relsPath].async('string');
+        // Match Target="../media/image1.png" or Target="media/image1.png"
+        const targetMatches = Array.from(relsXml.matchAll(/Target="([^"]+\.(?:png|jpg|jpeg|webp|gif|svg))"/gi));
+        for (const match of targetMatches) {
+          const rawTarget = match[1];
+          const mediaName = rawTarget.replace(/^\.\.\//, '').replace(/^ppt\//, '');
+          const fullMediaPath = mediaName.startsWith('media/') ? `ppt/${mediaName}` : `ppt/media/${mediaName.split('/').pop()}`;
+          
+          if (zip.files[fullMediaPath]) {
+            try {
+              const imgBuffer = await zip.files[fullMediaPath].async('nodebuffer');
+              const ext = fullMediaPath.split('.').pop()?.toLowerCase() || 'png';
+              const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'svg' ? 'image/svg+xml' : 'image/png';
+              
+              // Only include reasonable size images (skip tiny 1px decorators)
+              if (imgBuffer.length > 800) {
+                const base64Url = `data:${mime};base64,${imgBuffer.toString('base64')}`;
+                if (!slideImages.includes(base64Url)) {
+                  slideImages.push(base64Url);
+                }
+              }
+            } catch (e) {
+              console.warn(`[PPTX Media extraction] No se pudo procesar imagen ${fullMediaPath}:`, e);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[PPTX Rels] Error leyendo relaciones para diapositiva ${slideNum}:`, e);
+      }
+    }
+
+    if (cleanedSlide.length > 0 || notesText.length > 0 || slideImages.length > 0) {
+      let section = `--- DIAPOSITIVA ${slideNum}: ${slideTitle} ---\n${cleanedSlide}`;
       if (notesText && notesText.length > 0) {
         section += `\n\n[Notas del orador: ${notesText}]`;
       }
       slideTexts.push(section);
+
+      slidesData.push({
+        slideNumber: slideNum,
+        title: slideTitle,
+        content: cleanedSlide,
+        notes: notesText || undefined,
+        images: slideImages
+      });
     }
   }
 
   if (slideTexts.length === 0) {
-    throw new Error("La presentación de PowerPoint no contiene texto legible en las diapositivas.");
+    throw new Error("La presentación de PowerPoint no contiene texto legible ni diapositivas utilizables.");
   }
 
-  return slideTexts.join('\n\n');
+  return {
+    text: slideTexts.join('\n\n'),
+    slides: slidesData,
+    isPresentation: true
+  };
 }
 
 /**

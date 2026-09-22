@@ -16,6 +16,8 @@ import { FeedbackModal } from './components/FeedbackModal';
 import { AdminPanel } from './components/AdminPanel';
 import { UploadProgressAnimation, FileProgressItem } from './components/UploadProgressAnimation';
 import { trackUserActivity, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
+import { DocumentViewer } from './components/DocumentViewer';
+import { ConsentModal } from './components/ConsentModal';
 
 class WebSocketSession {
   private ws: WebSocket;
@@ -184,6 +186,7 @@ export default function App() {
   const [filesProgress, setFilesProgress] = useState<FileProgressItem[]>([]);
   const [studyText, setStudyText] = useState<string>('');
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
+  const [fileSlides, setFileSlides] = useState<Record<string, any[]>>({});
   const [activeFileNames, setActiveFileNames] = useState<string[]>([]);
   
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -193,12 +196,54 @@ export default function App() {
   const [savedQuizQuestions, setSavedQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizVersion, setQuizVersion] = useState(0);
 
+  // Cuaderno Activo States
+  const [activeStudyId, setActiveStudyId] = useState<string | null>(null);
+  const [activeStudyTitle, setActiveStudyTitle] = useState<string>('');
+
   // Oral Evaluator States
   const [suggestedOralTopics, setSuggestedOralTopics] = useState<SuggestedOralTopic[]>([]);
   const [isGeneratingOralTopics, setIsGeneratingOralTopics] = useState(false);
   const [oralExamSessions, setOralExamSessions] = useState<OralExamSession[]>([]);
   const [activeOralSession, setActiveOralSession] = useState<OralExamSession | null>(null);
   const [studyToDelete, setStudyToDelete] = useState<{ id: string; title: string } | null>(null);
+
+  // Document Viewer States
+  const [showDocumentViewer, setShowDocumentViewer] = useState(false);
+  const [viewerTitle, setViewerTitle] = useState('');
+  const [viewerContent, setViewerContent] = useState('');
+  const [viewerActiveFileName, setViewerActiveFileName] = useState<string | undefined>(undefined);
+
+  const handleOpenDocumentViewer = useCallback((customFileName?: string, customContent?: string, customTitle?: string) => {
+    if (customContent) {
+      setViewerContent(customContent);
+      setViewerTitle(customTitle || customFileName || 'Documento de Estudio');
+      setViewerActiveFileName(customFileName);
+    } else if (customFileName && fileTexts[customFileName]) {
+      setViewerContent(fileTexts[customFileName]);
+      setViewerTitle(customFileName);
+      setViewerActiveFileName(customFileName);
+    } else if (studyText) {
+      setViewerContent(studyText);
+      setViewerTitle(activeStudyTitle || 'Cuaderno de Estudio');
+      setViewerActiveFileName(customFileName);
+    } else if (files.length > 0) {
+      const firstWithText = files.find(f => fileTexts[f.name]);
+      if (firstWithText) {
+        setViewerContent(fileTexts[firstWithText.name]);
+        setViewerTitle(firstWithText.name);
+        setViewerActiveFileName(firstWithText.name);
+      } else {
+        setViewerContent(studyText || '');
+        setViewerTitle(activeStudyTitle || 'Cuaderno de Estudio');
+        setViewerActiveFileName(undefined);
+      }
+    } else {
+      setViewerContent('No hay documentos cargados en este momento.');
+      setViewerTitle('Visor de Documentos');
+      setViewerActiveFileName(undefined);
+    }
+    setShowDocumentViewer(true);
+  }, [fileTexts, studyText, activeStudyTitle, files]);
 
   // Extraction Cancellation and AbortController Reference
   const extractionAbortControllerRef = useRef<AbortController | null>(null);
@@ -284,8 +329,12 @@ export default function App() {
   }, []);
 
   const [userTier, setUserTier] = useState<'free' | 'pro'>(() => {
+    // Si aceptó los términos de telemetría/pedagogía adaptativa, su cuenta es PRO
+    const consent = localStorage.getItem('tutor_telemetry_consent');
+    if (consent === 'accepted') return 'pro';
     return (localStorage.getItem('user_tier') as 'free' | 'pro') || 'free';
   });
+  const [showConsentModal, setShowConsentModal] = useState(false);
   const [showBillingModal, setShowBillingModal] = useState(false);
   const [paymentStep, setPaymentStep] = useState<'select' | 'pay' | 'processing' | 'success'>('select');
   const [billingTab, setBillingTab] = useState<'plans' | 'monetize'>('plans');
@@ -340,6 +389,7 @@ export default function App() {
 
   const handleResetTier = () => {
     localStorage.setItem('user_tier', 'free');
+    localStorage.removeItem('tutor_telemetry_consent');
     setUserTier('free');
   };
 
@@ -439,8 +489,6 @@ export default function App() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [userHistory, setUserHistory] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [activeStudyId, setActiveStudyId] = useState<string | null>(null);
-  const [activeStudyTitle, setActiveStudyTitle] = useState<string>('');
   const [showSaveStudyModal, setShowSaveStudyModal] = useState(false);
   const [newStudyTitle, setNewStudyTitle] = useState('');
   const [tempEmailInput, setTempEmailInput] = useState('');
@@ -569,8 +617,8 @@ export default function App() {
 
   const handleCreateNewNotebook = () => {
     if (userTier === 'free' && userHistory.length >= 2) {
-      alert("⚠️ Has alcanzado el límite de 2 cuadernos de estudio en tu cuenta gratuita. Por favor, actualiza a PRO para crear cuadernos ilimitados.");
-      setShowBillingModal(true);
+      alert("⚠️ Has alcanzado el límite de 2 cuadernos en el modo estándar. ¡Activa el Plan PRO gratis aceptando la telemetría pedagógica para cuadernos ilimitados!");
+      setShowConsentModal(true);
       return;
     }
     clearActiveSession();
@@ -629,8 +677,8 @@ export default function App() {
     // Si es un cuaderno nuevo (no tiene activeStudyId) y el usuario ya tiene 2 o más cuadernos guardados
     if (userTier === 'free' && !activeStudyId && userHistory.length >= 2) {
       if (!silent) {
-        alert("⚠️ Has alcanzado el límite de 2 cuadernos de estudio en tu cuenta gratuita. Por favor, actualiza a PRO para guardar cuadernos ilimitados.");
-        setShowBillingModal(true);
+        alert("⚠️ Has alcanzado el límite de 2 cuadernos de estudio en el modo estándar. ¡Activa el Plan PRO gratis aceptando la telemetría pedagógica para guardar cuadernos ilimitados!");
+        setShowConsentModal(true);
       }
       return;
     }
@@ -743,6 +791,13 @@ export default function App() {
     setViewMode(study.viewMode || 'visual');
     setActiveStudyId(study.id);
     setActiveStudyTitle(study.title);
+  };
+
+  const handleReadSavedStudy = (study: any, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    loadStudy(study);
+    const textToRead = study.studyText || (study.fileTexts ? Object.values(study.fileTexts).join('\n\n') : '');
+    handleOpenDocumentViewer(undefined, textToRead, study.title);
   };
 
   const handleGoogleAuthLogin = async () => {
@@ -1291,8 +1346,8 @@ export default function App() {
     }
 
     if (userTier === 'free' && (files.length + validFiles.length) > 2) {
-      setShowBillingModal(true);
-      showToast('warning', 'Límite Gratuito', 'El plan gratuito está limitado a 2 documentos simultáneos. Actualiza a PRO para fuentes ilimitadas.');
+      setShowConsentModal(true);
+      showToast('warning', 'Límite de Modo Estándar', 'El modo estándar permite hasta 2 documentos simultáneos. Activa el Plan PRO gratis aceptando la telemetría para fuentes ilimitadas.');
       return;
     }
 
@@ -1323,6 +1378,7 @@ export default function App() {
 
     try {
       const newFileTexts = { ...fileTexts };
+      const newFileSlides = { ...fileSlides };
       const newActiveFileNames = [...activeFileNames];
       const successfullyExtractedFiles: File[] = [];
       const failedExtractions: { name: string; error: string }[] = [];
@@ -1393,6 +1449,9 @@ export default function App() {
           }
 
           newFileTexts[file.name] = text;
+          if ((file as any).slides && Array.isArray((file as any).slides)) {
+            newFileSlides[file.name] = (file as any).slides;
+          }
           if (!newActiveFileNames.includes(file.name)) {
             newActiveFileNames.push(file.name);
           }
@@ -1454,6 +1513,7 @@ export default function App() {
         const updatedFiles = [...files, ...successfullyExtractedFiles];
         setFiles(updatedFiles);
         setFileTexts(newFileTexts);
+        setFileSlides(newFileSlides);
         setActiveFileNames(newActiveFileNames);
         rebuildStudyText(updatedFiles, newActiveFileNames, newFileTexts);
         showToast('success', 'Fuentes cargadas', `Se procesaron ${successfullyExtractedFiles.length} documento(s) con éxito.`);
@@ -1673,12 +1733,13 @@ export default function App() {
               </p>
               <button
                 onClick={() => {
-                  setShowBillingModal(true);
+                  setShowConsentModal(true);
                   setShowMobileSidebar(false);
                 }}
-                className="w-full text-center py-2.5 bg-accent-systematic text-black hover:bg-white text-[9px] font-mono uppercase tracking-widest font-bold transition-all duration-200 cursor-pointer mb-2 border-none"
+                className="w-full text-center py-2.5 bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-mono uppercase tracking-widest font-bold transition-all duration-200 cursor-pointer mb-2 border-none flex items-center justify-center gap-1.5 shadow-md"
               >
-                Mejorar a PRO ($2.99 USD/mes)
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Activar PRO Gratis (Telemetría)</span>
               </button>
               <button
                 onClick={() => {
@@ -1765,6 +1826,19 @@ export default function App() {
                 {activeStudyTitle || "Cuaderno sin Guardar"}
               </h4>
             </div>
+
+            <button
+              onClick={() => {
+                handleOpenDocumentViewer();
+                setShowMobileSidebar(false);
+              }}
+              className="w-full py-2 bg-gradient-to-r from-accent-systematic to-amber-500 hover:brightness-110 text-black font-mono font-black text-[9.5px] uppercase tracking-wider rounded transition-all cursor-pointer flex items-center justify-center gap-1.5 border-none shadow-md"
+              title="Abrir visor de lectura de documentos y apuntes"
+            >
+              <BookOpen className="w-3.5 h-3.5 text-black" />
+              <span>📖 Leer Documento</span>
+            </button>
+
             <button
               onClick={() => {
                 if (!userEmail) {
@@ -1794,6 +1868,28 @@ export default function App() {
 
         <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest block mb-4 shrink-0 font-bold">Modos de Estudio</span>
         <div className="space-y-3 shrink-0 mb-6">
+          <button
+            disabled={files.length === 0 && !studyText}
+            onClick={() => {
+              handleOpenDocumentViewer();
+              setShowMobileSidebar(false);
+            }}
+            className={cn(
+              "w-full text-left p-4 xl:p-5 border transition-all duration-300 group cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed",
+              showDocumentViewer 
+                ? "border-accent-systematic bg-accent-systematic/15 text-white" 
+                : "border-accent-systematic/30 bg-accent-systematic/5 hover:border-accent-systematic hover:bg-accent-systematic/10 text-white"
+            )}
+          >
+            <h4 className="font-mono font-bold text-[10px] tracking-wider uppercase mb-1 flex items-center gap-1.5 text-accent-systematic">
+              <BookOpen className="w-3.5 h-3.5" />
+              [00] LECTOR_DOCUMENTOS
+            </h4>
+            <p className="text-[10px] text-ink-muted leading-relaxed">
+              Visor a pantalla completa para leer apuntes.
+            </p>
+          </button>
+
           <button
             disabled={files.length === 0 || isExtracting}
             onClick={() => {
@@ -1893,7 +1989,30 @@ export default function App() {
   const renderRightSidebarContent = () => {
     return (
       <>
-        <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest block mb-4">Registro Activo</span>
+        <div className="flex items-center justify-between mb-4">
+          <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest block font-bold">Registro Activo</span>
+          {files.length > 0 && (
+            <button
+              onClick={() => handleOpenDocumentViewer()}
+              className="text-[9px] font-mono font-bold bg-accent-systematic hover:bg-white text-black px-2 py-1 rounded transition-colors cursor-pointer flex items-center gap-1 border-none shadow-sm"
+              title="Abrir lector de documentos"
+            >
+              <BookOpen className="w-3 h-3" />
+              <span>Leer</span>
+            </button>
+          )}
+        </div>
+
+        {files.length > 0 && (
+          <button
+            onClick={() => handleOpenDocumentViewer()}
+            className="w-full mb-3 py-2 px-3 bg-accent-systematic/15 hover:bg-accent-systematic text-accent-systematic hover:text-black border border-accent-systematic/40 font-mono font-bold text-[9.5px] uppercase tracking-wider rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+            title="Abrir el visor de lectura con todos los archivos"
+          >
+            <BookOpen className="w-3.5 h-3.5 shrink-0" />
+            <span>📖 LEER DOCUMENTOS ({files.length})</span>
+          </button>
+        )}
         
         {files.length === 0 ? (
           <div className="border border-white/5 p-4 text-center text-ink-muted text-[10px] font-mono uppercase tracking-wider rounded">
@@ -1915,7 +2034,7 @@ export default function App() {
                       : "border-white/5 bg-bg-systematic/40 text-ink-muted opacity-60 hover:opacity-90"
                   )}
                 >
-                  <div className="flex items-center gap-1.5 truncate max-w-[140px]">
+                  <div className="flex items-center gap-1.5 truncate max-w-[120px]">
                     <input
                       type="checkbox"
                       checked={isActive}
@@ -1924,7 +2043,18 @@ export default function App() {
                     />
                     <span className="truncate font-medium" title={f.name}>{f.name}</span>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenDocumentViewer(f.name);
+                      }}
+                      className="px-1.5 py-0.5 text-accent-systematic hover:text-black hover:bg-accent-systematic rounded transition-colors cursor-pointer text-[8px] font-mono font-bold flex items-center gap-0.5 bg-accent-systematic/10 border border-accent-systematic/30"
+                      title={`Leer documento ${f.name}`}
+                    >
+                      <BookOpen className="w-2.5 h-2.5" />
+                      <span>LEER</span>
+                    </button>
                     <span className={cn(
                       "text-[7px] font-bold px-1 rounded shrink-0",
                       isActive ? "bg-accent-systematic/20 text-accent-systematic" : "bg-zinc-800 text-zinc-500"
@@ -1938,7 +2068,7 @@ export default function App() {
                       }}
                       className="text-red-400 hover:text-red-300 hover:underline shrink-0 cursor-pointer text-[8px] font-bold bg-transparent border-none p-0"
                     >
-                      BORRAR
+                      ✕
                     </button>
                   </div>
                 </div>
@@ -2109,6 +2239,17 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-1.5">
+          {(files.length > 0 || studyText) && (
+            <button
+              onClick={() => handleOpenDocumentViewer()}
+              className="px-2.5 py-1.5 bg-accent-systematic text-black text-[10px] font-mono font-bold uppercase tracking-wider rounded-lg flex items-center gap-1 shadow-sm cursor-pointer border-none"
+              title="Leer documentos y apuntes"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Leer</span>
+            </button>
+          )}
+
           <button
             onClick={() => {
               setFeedbackTriggerSource('manual');
@@ -2136,6 +2277,22 @@ export default function App() {
           <div className="mb-6 hover:scale-105 transition-transform" title="Tutor Cuaderno">
             <AppLogo size="sm" />
           </div>
+
+          {/* Reader button in rail */}
+          <button
+            disabled={files.length === 0 && !studyText}
+            onClick={() => handleOpenDocumentViewer()}
+            className={cn(
+              "w-10 h-10 border mb-6 flex items-center justify-center font-mono text-sm tracking-tighter transition-all duration-300 rounded cursor-pointer group relative",
+              files.length > 0 || studyText
+                ? "border-accent-systematic bg-accent-systematic/10 text-accent-systematic hover:bg-accent-systematic hover:text-black shadow-lg"
+                : "border-white/10 opacity-30 cursor-not-allowed text-zinc-500"
+            )}
+            title="📖 Visor de Lectura de Documentos"
+          >
+            <BookOpen className="w-4 h-4" />
+          </button>
+
           <div className={cn(
             "w-10 h-10 border mb-6 flex items-center justify-center font-mono text-sm tracking-tighter transition-all duration-300",
             viewMode === 'free_session' ? "border-accent-systematic text-accent-systematic font-bold" : "border-white/10 opacity-30"
@@ -2157,6 +2314,20 @@ export default function App() {
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-0">
             <GoldenRatioWatermark className="w-[520px] h-[520px] lg:w-[640px] lg:h-[640px] opacity-40 mix-blend-screen" />
           </div>
+
+          {/* Floating Reader Action across all screens */}
+          {(files.length > 0 || studyText) && (
+            <div className="sticky top-0 z-30 flex justify-end mb-4 pointer-events-none">
+              <button
+                onClick={() => handleOpenDocumentViewer()}
+                className="pointer-events-auto px-3.5 py-2 bg-[#18181b]/90 hover:bg-accent-systematic hover:text-black border border-accent-systematic/40 hover:border-accent-systematic text-white font-mono text-[10px] font-bold uppercase tracking-wider rounded-xl backdrop-blur-md shadow-2xl flex items-center gap-2 transition-all cursor-pointer group"
+                title="Abrir lector de documentos y apuntes"
+              >
+                <BookOpen className="w-4 h-4 text-accent-systematic group-hover:text-black transition-colors" />
+                <span>📖 Lector de Apuntes</span>
+              </button>
+            </div>
+          )}
 
       <AnimatePresence mode="wait">
           {viewMode === 'setup' && (
@@ -2299,12 +2470,28 @@ export default function App() {
 
                 {files.length > 0 && (
                   <div className="mt-8">
-                    <span className="font-mono text-[10px] text-accent-systematic uppercase tracking-widest block mb-1">
-                      Biblioteca / {files.length} Archivo(s) ({activeFileNames.length} Activo(s))
-                    </span>
-                    <span className="text-[10px] text-ink-muted leading-relaxed font-mono block mb-3">
-                      💡 Selecciona qué fuentes usarás para este estudio:
-                    </span>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                      <div>
+                        <span className="font-mono text-[10px] text-accent-systematic uppercase tracking-widest block font-bold">
+                          Biblioteca / {files.length} Archivo(s) ({activeFileNames.length} Activo(s))
+                        </span>
+                        <span className="text-[10px] text-ink-muted leading-relaxed font-mono block">
+                          💡 Selecciona qué fuentes usarás para este estudio:
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenDocumentViewer();
+                        }}
+                        className="px-3 py-1.5 bg-accent-systematic hover:bg-white text-black font-mono font-bold text-[10px] uppercase tracking-wider rounded-lg flex items-center justify-center gap-1.5 shadow-md transition-all cursor-pointer border-none shrink-0"
+                      >
+                        <BookOpen className="w-3.5 h-3.5 text-black" />
+                        <span>📖 Leer Documentos</span>
+                      </button>
+                    </div>
+
                     <div className="space-y-2">
                       {files.map((f, i) => {
                         const ext = f.name.split('.').pop()?.toUpperCase() || 'TXT';
@@ -2320,7 +2507,7 @@ export default function App() {
                                 : "border-white/5 hover:border-white/15 opacity-60 hover:opacity-90"
                             )}
                           >
-                            <div className="flex items-center gap-3 max-w-[70%]">
+                            <div className="flex items-center gap-3 max-w-[60%]">
                               <div className="relative flex items-center justify-center shrink-0">
                                 <input
                                   type="checkbox"
@@ -2337,7 +2524,20 @@ export default function App() {
                               </span>
                             </div>
                             
-                            <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-2.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenDocumentViewer(f.name);
+                                }}
+                                className="px-2 py-1 bg-accent-systematic/15 hover:bg-accent-systematic text-accent-systematic hover:text-black border border-accent-systematic/30 rounded font-mono text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer"
+                                title={`Leer contenido de ${f.name}`}
+                              >
+                                <BookOpen className="w-3 h-3" />
+                                <span>Leer</span>
+                              </button>
+
                               <span className={cn(
                                 "font-mono text-[8px] uppercase tracking-wider font-bold shrink-0 px-1.5 py-0.5 rounded",
                                 isActive 
@@ -2357,7 +2557,7 @@ export default function App() {
                                 className="p-1 text-ink-muted hover:text-red-400 hover:scale-110 transition-all shrink-0 cursor-pointer bg-transparent border-none"
                                 title="Eliminar fuente"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                ✕
                               </button>
                             </div>
                           </div>
@@ -2476,6 +2676,15 @@ export default function App() {
                           </div>
                           
                           <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={(e) => handleReadSavedStudy(study, e)}
+                              className="px-2 py-1 bg-accent-systematic/15 hover:bg-accent-systematic text-accent-systematic hover:text-black rounded font-mono text-[8.5px] font-bold uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer border border-accent-systematic/30"
+                              title={`Leer documentos de ${study.title}`}
+                            >
+                              <BookOpen className="w-2.5 h-2.5" />
+                              <span>Leer</span>
+                            </button>
                             {activeStudyId === study.id && (
                               <span className="text-[8px] font-mono bg-emerald-500/20 text-emerald-400 px-1 rounded uppercase tracking-wider font-bold">
                                 Activo
@@ -2513,6 +2722,25 @@ export default function App() {
                   </p>
 
                   <div className="mt-6 flex flex-col">
+                    {/* Method 0: Lectura & Visualizador de Apuntes */}
+                    <button
+                      disabled={files.length === 0 && !studyText}
+                      onClick={() => handleOpenDocumentViewer()}
+                      className="w-full text-left p-4 mb-3 border border-accent-systematic/40 bg-accent-systematic/10 hover:bg-accent-systematic/20 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-300 group text-ink cursor-pointer rounded-xl"
+                    >
+                      <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest block mb-1 font-bold flex items-center justify-between">
+                        <span>00. Visualizador Integrado</span>
+                        <span className="bg-accent-systematic text-black px-1.5 py-0.5 rounded text-[8px] font-black">NUEVO</span>
+                      </span>
+                      <span className="font-display font-bold text-base text-accent-systematic group-hover:text-white transition-all block mb-1 uppercase flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-accent-systematic" />
+                        Lectura de Documentos y Apuntes
+                      </span>
+                      <p className="text-ink-muted text-xs leading-relaxed">
+                        Lee a pantalla completa tus PDFs y textos, ajusta tipografía, activa modo sepia/oscuro y busca conceptos al instante.
+                      </p>
+                    </button>
+
                     {/* Method 1: Tutoría Libre */}
                     <button
                       disabled={files.length === 0 || activeFileNames.length === 0 || isExtracting}
@@ -3003,13 +3231,11 @@ export default function App() {
               <div className="p-6 border-b border-white/5 flex items-center justify-between">
                 <div>
                   <h3 className="text-lg font-bold text-ink flex items-center gap-2">
-                    <Coins className="w-5 h-5 text-accent-systematic" />
-                    {isAdmin ? "Suscripción Premium & Gestión Comercial" : "Suscripción Tutor Cuaderno PRO"}
+                    <Sparkles className="w-5 h-5 text-amber-400" />
+                    Planes & Beneficios de Estudio
                   </h3>
                   <p className="text-ink-muted text-xs mt-1">
-                    {isAdmin 
-                      ? "Panel de control de planes para estudiantes y guía técnica de monetización Stripe (Visible solo para Administrador)."
-                      : "Desbloquea documentos ilimitados y exámenes orales de voz en alta definición."}
+                    Activa la versión PRO sin pagar suscribiéndote al programa de telemetría y pedagogía adaptativa.
                   </p>
                 </div>
                 <button
@@ -3032,7 +3258,7 @@ export default function App() {
                         : "border-transparent text-ink-muted hover:text-white"
                     )}
                   >
-                    [01] Planes Premium
+                    [01] Planes & Activación PRO
                   </button>
                   <button
                     onClick={() => setBillingTab('monetize')}
@@ -3044,7 +3270,7 @@ export default function App() {
                     )}
                   >
                     <span className="bg-amber-500/20 text-amber-400 text-[8px] px-1.5 py-0.5 rounded font-mono font-bold">ADMIN</span>
-                    <span>[02] Guía de Negocio & Stripe</span>
+                    <span>[02] Arquitectura de Negocio (Referencia)</span>
                   </button>
                 </div>
               )}
@@ -3057,9 +3283,9 @@ export default function App() {
                       <div className="space-y-6">
                         <div className="text-center max-w-md mx-auto mb-2">
                           <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest">Planes de Estudio</span>
-                          <h4 className="text-xl font-bold uppercase tracking-tight text-white mt-1">Elige un plan de estudio</h4>
+                          <h4 className="text-xl font-bold uppercase tracking-tight text-white mt-1">Elige tu modalidad</h4>
                           <p className="text-xs text-ink-muted leading-relaxed mt-1">
-                            Comienza gratis con lo básico o desbloquea todo el potencial con nuestro plan para estudiantes profesionales.
+                            El nivel PRO está 100% bonificado al colaborar con la telemetría pedagógica de la app.
                           </p>
                         </div>
 
@@ -3071,15 +3297,15 @@ export default function App() {
                           )}>
                             {userTier === 'free' && (
                               <span className="absolute -top-2.5 left-6 bg-accent-systematic text-black font-mono text-[8px] font-bold px-2 py-0.5 uppercase tracking-widest rounded">
-                                Plan Activo
+                                Modo Activo
                               </span>
                             )}
                             <div>
-                              <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest">Plan de Entrada</span>
-                              <h5 className="text-lg font-bold uppercase tracking-tight mt-1">Tutor Gratis</h5>
+                              <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest">Sin Telemetría</span>
+                              <h5 className="text-lg font-bold uppercase tracking-tight mt-1">Modo Estándar</h5>
                               <div className="mt-4 mb-5 flex items-baseline gap-1">
-                                <span className="text-2xl font-black text-white">$0.00</span>
-                                <span className="text-[10px] text-ink-muted uppercase font-mono">/ para siempre</span>
+                                <span className="text-2xl font-black text-white">Básico</span>
+                                <span className="text-[10px] text-ink-muted uppercase font-mono">/ Estándar</span>
                               </div>
                               <ul className="space-y-2.5 text-xs text-ink-muted">
                                 <li className="flex items-start gap-2">
@@ -3088,11 +3314,11 @@ export default function App() {
                                 </li>
                                 <li className="flex items-start gap-2">
                                   <Check className="w-3.5 h-3.5 text-accent-systematic shrink-0 mt-0.5" />
-                                  <span>Tutoría de voz en tiempo real</span>
+                                  <span>Tutoría de voz estándar</span>
                                 </li>
                                 <li className="flex items-start gap-2">
                                   <Check className="w-3.5 h-3.5 text-accent-systematic shrink-0 mt-0.5" />
-                                  <span>Cuestionarios y tarjetas</span>
+                                  <span>Telemetría desactivada</span>
                                 </li>
                               </ul>
                             </div>
@@ -3101,45 +3327,45 @@ export default function App() {
                                 disabled
                                 className="w-full py-2.5 border border-white/10 text-[9px] font-mono font-bold uppercase tracking-wider text-ink-muted text-center rounded-lg bg-white/5 cursor-not-allowed"
                               >
-                                {userTier === 'free' ? "Plan Actual Activado" : "Plan Gratuito"}
+                                {userTier === 'free' ? "Modo Actual" : "Básico"}
                               </button>
                             </div>
                           </div>
 
-                          {/* PRO Plan Card */}
+                          {/* PRO Plan Card (Granted via Telemetry Consent) */}
                           <div className={cn(
                             "border p-6 rounded-xl flex flex-col justify-between relative bg-bg-systematic/30 overflow-hidden",
-                            userTier === 'pro' ? "border-amber-500 bg-amber-500/[0.02]" : "border-white/10 hover:border-white/20"
+                            userTier === 'pro' ? "border-amber-500 bg-amber-500/[0.02]" : "border-amber-500/40 hover:border-amber-500"
                           )}>
                             <div className="absolute top-0 right-0 bg-amber-500/10 text-amber-400 text-[8px] font-mono font-bold uppercase tracking-widest px-2.5 py-1 border-b border-l border-white/5 rounded-bl-xl">
-                              ★ RECOMENDADO
+                              ★ 100% GRATIS
                             </div>
                             {userTier === 'pro' && (
                               <span className="absolute -top-2.5 left-6 bg-amber-500 text-black font-mono text-[8px] font-bold px-2 py-0.5 uppercase tracking-widest rounded">
-                                Plan Activo
+                                Plan Activo ★ PRO
                               </span>
                             )}
                             <div>
-                              <span className="font-mono text-[9px] text-amber-500 uppercase tracking-widest font-bold">Plan Profesional</span>
+                              <span className="font-mono text-[9px] text-amber-500 uppercase tracking-widest font-bold">Colaboración de Estudio</span>
                               <h5 className="text-lg font-bold uppercase tracking-tight mt-1 text-white">
                                 Estudiante PRO
                               </h5>
                               <div className="mt-4 mb-5 flex items-baseline gap-1">
-                                <span className="text-2xl font-black text-amber-400">$2.99 USD</span>
-                                <span className="text-[10px] text-ink-muted uppercase font-mono">/ al mes</span>
+                                <span className="text-2xl font-black text-amber-400">GRATIS</span>
+                                <span className="text-[10px] text-emerald-400 uppercase font-mono font-bold">/ Con Telemetría</span>
                               </div>
                               <ul className="space-y-2.5 text-xs text-white">
                                 <li className="flex items-start gap-2">
                                   <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                                  <span className="font-bold text-amber-200">Documentos ilimitados</span>
+                                  <span className="font-bold text-amber-200">Documentos y cuadernos ilimitados</span>
                                 </li>
                                 <li className="flex items-start gap-2">
                                   <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                                  <span>Tutoría de voz con latencia prioritaria</span>
+                                  <span>Tutoría de voz y lectura de PPTX ilimitada</span>
                                 </li>
                                 <li className="flex items-start gap-2">
                                   <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                                  <span>Subidas de PDFs gigantes sin restricciones</span>
+                                  <span>Activación instantánea aceptando condiciones</span>
                                 </li>
                                 <li className="flex items-start gap-2">
                                   <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
@@ -3157,10 +3383,14 @@ export default function App() {
                                 </button>
                               ) : (
                                 <button
-                                  onClick={() => setPaymentStep('pay')}
-                                  className="w-full py-2.5 bg-accent-systematic text-black hover:bg-white text-[9px] font-mono font-bold uppercase tracking-wider text-center rounded-lg transition-all cursor-pointer"
+                                  onClick={() => {
+                                    setShowBillingModal(false);
+                                    setShowConsentModal(true);
+                                  }}
+                                  className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-mono font-bold uppercase tracking-wider text-center rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-lg"
                                 >
-                                  Mejorar a PRO ahora
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                  <span>Activar PRO con Telemetría</span>
                                 </button>
                               )}
                             </div>
@@ -3178,7 +3408,7 @@ export default function App() {
                               <span className="font-mono text-[8px] text-emerald-400 uppercase tracking-widest block mb-0.5">Donación Voluntaria</span>
                               <h5 className="text-xs font-bold text-ink uppercase tracking-tight">¿Prefieres apoyar por Mercado Pago?</h5>
                               <p className="text-[10px] text-ink-muted leading-relaxed max-w-sm">
-                                Si te encanta el tutor y prefieres una aportación voluntaria única en vez de suscribirte, puedes colaborar cómodamente con Mercado Pago.
+                                Si te encanta el tutor y prefieres una aportación voluntaria única, puedes colaborar directamente con Mercado Pago.
                               </p>
                             </div>
                           </div>
@@ -4758,6 +4988,37 @@ app.post('/api/create-checkout', async (req, res) => {
           <span>CAPA_DE_VOZ_CONECTADA_V2.0 // (C) 2024 AI TUTOR LABS</span>
         </div>
       </footer>
+
+      {/* VISOR Y LECTOR DE DOCUMENTOS INTEGRADO */}
+      <DocumentViewer
+        isOpen={showDocumentViewer}
+        onClose={() => setShowDocumentViewer(false)}
+        title={viewerTitle || activeStudyTitle || 'Cuaderno de Estudio'}
+        content={viewerContent || studyText || 'No hay contenido disponible para leer.'}
+        fileName={viewerActiveFileName}
+        availableFiles={
+          Object.keys(fileTexts).length > 0
+            ? Object.keys(fileTexts).map(name => ({ 
+                name, 
+                content: fileTexts[name],
+                slides: fileSlides[name] || undefined
+              }))
+            : studyText
+              ? [{ name: activeStudyTitle || 'Cuaderno', content: studyText }]
+              : []
+        }
+        initialActiveFileName={viewerActiveFileName}
+      />
+
+      {/* MODAL DE CONSENTIMIENTO Y TRANSPARENCIA TELEMÉTRICA / ACTIVACIÓN PRO */}
+      <ConsentModal 
+        isOpen={showConsentModal ? true : undefined}
+        onClose={() => setShowConsentModal(false)}
+        onConsentGiven={() => {
+          setUserTier('pro');
+          showToast('success', '¡Plan PRO Activado!', 'Has obtenido el plan PRO 100% bonificado con acceso ilimitado.');
+        }}
+      />
     </div>
   );
 }

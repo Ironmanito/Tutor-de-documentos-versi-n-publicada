@@ -288,3 +288,81 @@ export async function updateFeedbackStatus(id: string, status: 'new' | 'reviewed
   });
   return res.ok;
 }
+
+export interface SessionReportItem {
+  id: string;
+  sessionId: string;
+  visitorId: string;
+  userEmail?: string;
+  userName?: string;
+  device: string;
+  iniciada_en: string;
+  finalizada_en: string;
+  duracion_segundos: number;
+  datos_servicio: {
+    archivos_consultados?: string[];
+    vistas_visitadas?: string[];
+    preguntas_respondidas_count?: number;
+    promedio_calificacion?: number;
+    examenes_orales_count?: number;
+    documentos_leidos_count?: number;
+  };
+  excedente_conductual: {
+    duracion_total_sesion_ms: number;
+    tiempo_activo_ms: number;
+    tiempo_en_segundo_plano_ms: number;
+    cambios_de_pestana_total: number;
+    titubeos_correccion_total: number;
+    latencia_promedio_decision_ms: number;
+    velocidad_interaccion_predominante: string;
+    metricas_lectura?: {
+      tiempo_lectura_total_ms: number;
+      wpm_promedio: number;
+      profundidad_max_scroll: number;
+      textos_copiados_count: number;
+    };
+    eventos_recientes?: any[];
+  };
+  analisis_cognitivo?: {
+    nivel_certeza: number;
+    nivel_vacilacion: number;
+    indice_fatiga: number;
+    diagnostico_emocional: string;
+    resumen_ejecutivo: string;
+    desvios_detectados: string;
+    patrones_detectados: string[];
+    recomendacion_pedagogica: string;
+  };
+  createdAt: string;
+}
+
+/**
+ * Admin: Fetch all recorded sessions with cognitive & emotional surplus analysis
+ */
+export async function fetchAdminSessions(adminEmail?: string): Promise<{ sessions: SessionReportItem[] }> {
+  const email = adminEmail || localStorage.getItem('user_email') || '';
+  const res = await fetch('/api/admin/sessions', {
+    headers: {
+      'x-admin-email': email,
+    },
+  });
+  if (!res.ok) {
+    throw new Error('Error al obtener lista de sesiones');
+  }
+  return await res.json();
+}
+
+/**
+ * Admin: Delete a session report
+ */
+export async function deleteAdminSession(id: string, adminEmail?: string): Promise<boolean> {
+  const email = adminEmail || localStorage.getItem('user_email') || '';
+  const res = await fetch(`/api/admin/sessions/${id}`, {
+    method: 'DELETE',
+    headers: {
+      'x-admin-email': email,
+    },
+  });
+  return res.ok;
+}
+
