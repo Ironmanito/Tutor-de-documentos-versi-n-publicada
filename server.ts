@@ -60,7 +60,7 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
 
 const ADMIN_AUTHORIZED_EMAILS = ['martinvelozz01@gmail.com'];
 function verifyAdminRequest(req: express.Request): boolean {
@@ -1776,19 +1776,47 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
-  const pathname = request.url ? new URL(request.url, `http://${request.headers.host}`).pathname : '';
-  if (pathname === '/api/live') {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  } else {
-    socket.destroy();
+  try {
+    const rawUrl = request.url || '';
+    const hostHeader = request.headers.host || '127.0.0.1';
+    let pathname = '';
+    try {
+      pathname = new URL(rawUrl, `http://${hostHeader}`).pathname;
+    } catch {
+      pathname = rawUrl.split('?')[0] || '';
+    }
+
+    if (pathname === '/api/live' || pathname.startsWith('/api/live')) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+      return;
+    }
+  } catch (err) {
+    console.error("WebSocket upgrade error:", err);
   }
+  socket.destroy();
 });
 
 wss.on('connection', (clientWs: WebSocket, request: any) => {
   console.log("Client connected to WebSocket proxy");
   let liveSession: any = null;
+  let liveSessionPromise: Promise<any> | null = null;
+  const inputBuffer: any[] = [];
+
+  const safeSend = (data: any) => {
+    if (clientWs.readyState === WebSocket.OPEN) {
+      try {
+        clientWs.send(JSON.stringify(data));
+      } catch (err) {
+        console.warn("Failed to send message to client WebSocket:", err);
+      }
+    }
+  };
+
+  clientWs.on('error', (err) => {
+    console.warn("Client WebSocket emitted error:", err);
+  });
 
   // Extract apiKey from query string if available
   let customKey: string | undefined;
@@ -1807,10 +1835,19 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
   clientWs.on('message', async (message: string) => {
     try {
       const parsed = JSON.parse(message);
+
+      if (parsed.type === 'ping') {
+        safeSend({ type: 'pong' });
+        return;
+      }
       
       if (parsed.type === 'setup') {
-        const { mode, text, topics } = parsed.params;
+        const { mode, text, topics, previousNotes } = parsed.params;
         const cleanText = cleanStudyTextForAnalysis(text || '');
+
+        const notesMemoryBlock = previousNotes && Array.isArray(previousNotes) && previousNotes.length > 0
+          ? `\nMEMORIA Y NOTAS DE LA CONVERSACIÓN PREVIA EN ESTA SESIÓN (REANUDACIÓN):\nEl usuario y tú ya han estado conversando y han tratado los siguientes conceptos y temas clave:\n${previousNotes.map((n: string) => `• ${n}`).join('\n')}\nIMPORTANTE: Continúa la conversación de manera fluida y natural desde este punto, manteniendo el hilo de lo discutido sin volver a empezar de cero.\n`
+          : '';
         
         // Define live config based on the modes
         let systemInstruction = "";
@@ -1885,6 +1922,7 @@ Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
+${notesMemoryBlock}
 `;
         } else if (mode === 'oral_exam') {
           const { selectedTopicTitle, questions } = parsed.params;
@@ -1914,48 +1952,49 @@ ${cleanText ? cleanText.substring(0, 50000) : ''}
                     },
                     strengths: {
                       type: Type.STRING,
-                      description: "Un reporte breve sobre los puntos fuertes de la respuesta del estudiante (qué conceptos, hechos o argumentos explicó correctamente)."
+                      description: "Un reporte breve sobre los puntos fuertes de la respuesta del estudiante."
                     },
                     toImprove: {
                       type: Type.STRING,
-                      description: "Un informe detallado por escrito de los pequeños temas, detalles concretos o conceptos específicos que le faltaron repasar o que debe mejorar en esta pregunta."
+                      description: "Detalles o conceptos específicos que le faltaron repasar o que debe mejorar en esta pregunta."
                     }
                   },
-                  required: ["questionIndex", "score", "feedback", "userAnswerTranscript", "strengths", "toImprove"]
+                  required: ["questionIndex", "score", "feedback"]
                 }
               },
               displayKeyConceptDeclaration
             ]
           }];
 
-          systemInstruction = `Eres un evaluador académico oral de élite para el tema de examen: "${selectedTopicTitle}".
-El estudiante se ha preparado con el material del cuaderno y ahora está realizando un examen oral formal de exactamente 5 preguntas secuenciales.
+          systemInstruction = `Eres un evaluador académico oral para el tema de examen: "${selectedTopicTitle}".
+El estudiante se ha preparado con el material del cuaderno y ahora está rindiendo un examen oral formal de 5 preguntas secuenciales.
 
-Las 5 preguntas que debes formular secuencialmente son:
+Las 5 preguntas son:
 ${questions ? questions.map((q: string, i: number) => `Pregunta ${i + 1}: ${q}`).join('\n') : ''}
 
-INSTRUCCIONES DE CONDUCTA DEL EXAMINADOR:
-1. Saluda cordialmente al estudiante, dile que vas a evaluar el tema "${selectedTopicTitle}" con 5 preguntas y formula claramente la PREGUNTA 1 (sin dar pistas de la respuesta).
-2. Escucha con atención la respuesta oral del estudiante.
-   - IMPORTANTE SOBRE PAUSAS: Los humanos a veces hacen pausas para pensar. No los interrumpas si la idea parece incompleta. Sé comprensivo.
-3. Una vez que el estudiante haya finalizado su respuesta para la pregunta actual:
-   - DEBES invocar la función 'submitOralAnswer' para registrar su respuesta, su puntaje (0-100), tu feedback detallado, una transcripción resumida de su respuesta, los puntos fuertes ('strengths'), y de forma muy específica y detallada, los temas concretos o detalles que le faltan repasar o mejorar en esta pregunta ('toImprove'). Esto es obligatorio para sincronizar la interfaz y guardar el informe escrito.
-   - Dale un breve comentario oral de aliento en español (conciso, de tono profesional pero amigable) y formula la SIGUIENTE PREGUNTA.
-4. Repite esto hasta haber realizado las 5 preguntas.
-5. Al finalizar la última pregunta (después de llamar a 'submitOralAnswer' para el índice 4), haz una síntesis final breve con la nota promedio global de su examen, felicítalo por su esfuerzo y concluye el examen de forma amigable.
+REGLAS DE EVALUACIÓN Y TOMA DE TURNO:
+1. Al iniciar, saluda al estudiante brevemente y formula con claridad la PREGUNTA 1.
+2. Cuando el estudiante hable ante el micrófono respondiendo a la pregunta:
+   - En cuanto el estudiante termine de hablar o haga una breve pausa de 1 a 2 segundos (o si indica que terminó), TOMA EL TURNO DE INMEDIATO. NO TE QUEDES EN SILENCIO NI ESPERES MÁS TIEMPO.
+   - DEBES llamar obligatoriamente a la función 'submitOralAnswer' con los datos de evaluación:
+     * 'questionIndex': índice de la pregunta actual (0 para Pregunta 1, 1 para Pregunta 2, etc.).
+     * 'score': puntuación de 0 a 100 según el contenido del cuaderno.
+     * 'feedback': comentario oral corto evaluando su respuesta.
+     * 'userAnswerTranscript': resumen breve de lo que dijo el estudiante.
+     * 'strengths': aciertos principales.
+     * 'toImprove': detalles que faltaron.
+   - Tras ejecutar 'submitOralAnswer', dile brevemente tu evaluación y formula inmediatamente la SIGUIENTE PREGUNTA.
+3. Repite este ciclo de manera fluida y dinámica para las 5 preguntas.
+4. Al evaluar la pregunta 5 (índice 4), haz una síntesis de cierre con su nota global y felicítalo.
 
-DESPLIEGUE VISUAL DE IDEAS CLAVE Y PALABRAS GUÍA EN PANTALLA:
-Al formular cada pregunta o dar retroalimentación oral, DEBES llamar a la función 'displayKeyConcept':
-- En 'keyConcept', coloca la pregunta o tema principal en una frase muy corta (máximo 5-7 palabras).
-- CADA VEZ QUE FORMULES UNA PREGUNTA, DEBES incluir obligatoriamente el parámetro 'suggestedKeywords' con 2 a 5 palabras o términos clave que el estudiante debería mencionar o explicar en su respuesta oral para tener la máxima puntuación. Esto aparecerá destacado en pantalla como su guía de respuesta.
-
-REGLA DE ESPECIFICIDAD DEL TEXTO Y METADATOS:
-Evalúa la respuesta del estudiante basándote rigurosamente en el contenido exacto, conceptos, términos técnicos y detalles del tema. NUNCA menciones nombres de profesores, el título "Dossier de preguntas" ni datos de portada.
+DESPLIEGUE DE IDEAS CLAVE:
+Al hacer cada pregunta, llama a 'displayKeyConcept' con la idea principal y las palabras guía en 'suggestedKeywords'.
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
+${notesMemoryBlock}
 
-Mantén tus respuestas orales sumamente concisas y dinámicas para evitar latencias de voz.`;
+Mantén tus intervenciones habladas concisas para mantener un diálogo dinámico sin retrasos.`;
         } else {
           // Free voice study buddy mode
           tools = [{
@@ -1979,6 +2018,7 @@ Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
+${notesMemoryBlock}
 `;
         }
 
@@ -1994,44 +2034,83 @@ ${cleanText ? cleanText.substring(0, 50000) : ''}
           };
           const liveCallbacks = {
             onopen: () => {
-              clientWs.send(JSON.stringify({ type: 'open' }));
+              safeSend({ type: 'open' });
             },
             onmessage: (serverMessage: LiveServerMessage) => {
-              clientWs.send(JSON.stringify({ type: 'message', data: serverMessage }));
+              safeSend({ type: 'message', data: serverMessage });
             },
             onclose: () => {
-              clientWs.send(JSON.stringify({ type: 'close' }));
+              safeSend({ type: 'close' });
             },
             onerror: (err: any) => {
-              clientWs.send(JSON.stringify({ type: 'error', data: err?.message || String(err) }));
+              const errStr = typeof err === 'string' ? err : (err?.message || (typeof err === 'object' ? JSON.stringify(err) : String(err)));
+              safeSend({ type: 'error', data: errStr });
             }
           };
 
-          try {
-            liveSession = await ai.live.connect({
-              model: "gemini-3.8-live",
-              config: liveConfig,
-              callbacks: liveCallbacks
-            });
-          } catch (liveErr) {
-            console.warn("gemini-3.8-live connection failed, falling back to gemini-3.1-flash-live-preview:", liveErr);
-            liveSession = await ai.live.connect({
-              model: "gemini-3.1-flash-live-preview",
-              config: liveConfig,
-              callbacks: liveCallbacks
-            });
-          }
+          const connectLive = async () => {
+            try {
+              const session = await ai.live.connect({
+                model: "gemini-3.8-live",
+                config: liveConfig,
+                callbacks: liveCallbacks
+              });
+              liveSession = session;
+              return session;
+            } catch (liveErr) {
+              console.warn("gemini-3.8-live connection failed, falling back to gemini-3.1-flash-live-preview:", liveErr);
+              const session = await ai.live.connect({
+                model: "gemini-3.1-flash-live-preview",
+                config: liveConfig,
+                callbacks: liveCallbacks
+              });
+              liveSession = session;
+              return session;
+            }
+          };
+
+          liveSessionPromise = connectLive().then((session) => {
+            while (inputBuffer.length > 0) {
+              const buffered = inputBuffer.shift();
+              try {
+                if (buffered.type === 'realtimeInput') {
+                  session.sendRealtimeInput(buffered.data);
+                } else if (buffered.type === 'toolResponse') {
+                  session.sendToolResponse(buffered.data);
+                }
+              } catch (bErr) {
+                console.warn("Error sending buffered packet to Gemini Live:", bErr);
+              }
+            }
+            return session;
+          }).catch((connErr: any) => {
+            console.error("Gemini Live connection failed:", connErr);
+            safeSend({ type: 'error', data: `Error al conectar con la API de Gemini Live: ${connErr.message || connErr}` });
+            throw connErr;
+          });
         } catch (connErr: any) {
-          console.error("Gemini Live connection failed:", connErr);
-          clientWs.send(JSON.stringify({ type: 'error', data: `Error al conectar con la API de Gemini Live: ${connErr.message || connErr}` }));
+          console.error("Gemini Live setup failed:", connErr);
+          safeSend({ type: 'error', data: `Error al preparar la sesión de Gemini Live: ${connErr.message || connErr}` });
         }
       } else if (parsed.type === 'realtimeInput') {
         if (liveSession) {
-          liveSession.sendRealtimeInput(parsed.data);
+          try {
+            liveSession.sendRealtimeInput(parsed.data);
+          } catch (sendErr) {
+            console.warn("Error sending realtime input to Gemini Live:", sendErr);
+          }
+        } else if (liveSessionPromise) {
+          inputBuffer.push({ type: 'realtimeInput', data: parsed.data });
         }
       } else if (parsed.type === 'toolResponse') {
         if (liveSession) {
-          liveSession.sendToolResponse(parsed.data);
+          try {
+            liveSession.sendToolResponse(parsed.data);
+          } catch (sendErr) {
+            console.warn("Error sending tool response to Gemini Live:", sendErr);
+          }
+        } else if (liveSessionPromise) {
+          inputBuffer.push({ type: 'toolResponse', data: parsed.data });
         }
       }
     } catch (err: any) {
@@ -2042,7 +2121,11 @@ ${cleanText ? cleanText.substring(0, 50000) : ''}
   clientWs.on('close', () => {
     console.log("Client disconnected from WebSocket proxy");
     if (liveSession) {
-      liveSession.close();
+      try {
+        liveSession.close();
+      } catch (e) {
+        console.warn("Error closing liveSession on client disconnect:", e);
+      }
       liveSession = null;
     }
   });

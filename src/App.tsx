@@ -19,12 +19,20 @@ import { trackUserActivity, shouldPromptPeriodicFeedback, recordFeedbackPromptSh
 
 class WebSocketSession {
   private ws: WebSocket;
+  private pingInterval?: any;
   private onOpenCallback?: () => void;
   private onMessageCallback?: (message: any) => void;
   private onCloseCallback?: () => void;
   private onErrorCallback?: (err: any) => void;
 
-  constructor(params: { mode: string; text: string; topics?: any; selectedTopicTitle?: string; questions?: string[] }) {
+  constructor(params: { 
+    mode: string; 
+    text: string; 
+    topics?: any; 
+    selectedTopicTitle?: string; 
+    questions?: string[];
+    previousNotes?: string[];
+  }) {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
     const savedKey = localStorage.getItem('user_gemini_api_key');
@@ -32,13 +40,24 @@ class WebSocketSession {
     this.ws = new WebSocket(`${protocol}//${host}/api/live${queryParam}`);
 
     this.ws.onopen = () => {
-      console.log("WebSocket connection opened, sending setup message...");
+      console.log("WebSocket connection opened, sending setup message with notes memory...");
       this.ws.send(JSON.stringify({ type: 'setup', params }));
+
+      // Keep-alive heartbeat ping every 12 seconds to prevent idle timeout
+      this.pingInterval = setInterval(() => {
+        if (this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 12000);
     };
 
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg.type === 'pong') {
+          // Heartbeat pong received, connection active
+          return;
+        }
         if (msg.type === 'open') {
           console.log("Gemini Live session successfully initialized on server.");
           if (this.onOpenCallback) {
@@ -54,7 +73,8 @@ class WebSocketSession {
           }
         } else if (msg.type === 'error') {
           if (this.onErrorCallback) {
-            this.onErrorCallback(new Error(msg.data));
+            const errStr = typeof msg.data === 'string' ? msg.data : (msg.data?.message || JSON.stringify(msg.data));
+            this.onErrorCallback(new Error(errStr));
           }
         }
       } catch (err) {
@@ -63,16 +83,24 @@ class WebSocketSession {
     };
 
     this.ws.onclose = () => {
+      if (this.pingInterval) {
+        clearInterval(this.pingInterval);
+        this.pingInterval = undefined;
+      }
       console.log("WebSocket connection closed.");
       if (this.onCloseCallback) {
         this.onCloseCallback();
       }
     };
 
-    this.ws.onerror = (err) => {
-      console.error("WebSocket connection error:", err);
+    this.ws.onerror = () => {
+      if (this.pingInterval) {
+        clearInterval(this.pingInterval);
+        this.pingInterval = undefined;
+      }
+      console.warn("WebSocket connection error event detected");
       if (this.onErrorCallback) {
-        this.onErrorCallback(err);
+        this.onErrorCallback(new Error("No se pudo mantener la conexión con el tutor por voz en tiempo real."));
       }
     };
   }
@@ -91,18 +119,34 @@ class WebSocketSession {
 
   sendRealtimeInput(data: any) {
     if (this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'realtimeInput', data }));
+      try {
+        this.ws.send(JSON.stringify({ type: 'realtimeInput', data }));
+      } catch (e) {
+        console.warn("Error sending realtimeInput to WebSocket:", e);
+      }
     }
   }
 
   sendToolResponse(data: any) {
     if (this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'toolResponse', data }));
+      try {
+        this.ws.send(JSON.stringify({ type: 'toolResponse', data }));
+      } catch (e) {
+        console.warn("Error sending toolResponse to WebSocket:", e);
+      }
     }
   }
 
   close() {
-    this.ws.close();
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = undefined;
+    }
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      try {
+        this.ws.close();
+      } catch (_) {}
+    }
   }
 }
 
@@ -4826,9 +4870,18 @@ export function MicErrorGuide({ onRetry }: { onRetry?: () => void }) {
               <ExternalLink className="w-4 h-4 text-amber-400 shrink-0" />
               ¡Solución en 1 paso!
             </h5>
-            <p className="text-slate-200 text-xs leading-relaxed">
-              Haz clic en <strong>"Open in new tab"</strong> (arriba a la derecha de AI Studio) para abrir la app en una pestaña propia sin restricciones.
+            <p className="text-slate-200 text-xs leading-relaxed mb-2">
+              Abre la aplicación en una pestaña propia para que el navegador te solicite permiso de micrófono de forma estándar.
             </p>
+            <a
+              href={typeof window !== 'undefined' ? window.location.href : '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-xs transition-colors cursor-pointer shadow-md"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Abrir en nueva pestaña
+            </a>
           </div>
         </>
       ) : (
@@ -4893,41 +4946,77 @@ function StudySession({
   onEnd: () => void; 
 }) {
   const [isConnecting, setIsConnecting] = useState(true);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [userVolume, setUserVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string } | null>(null);
+  const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
+  const [userCustomNote, setUserCustomNote] = useState("");
   
   const sessionRef = useRef<any>(null);
   const playerRef = useRef<AudioStreamPlayer | null>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
+  const isClosingIntentionalRef = useRef(false);
+  const keyConceptsHistoryRef = useRef<string[]>([]);
+  const reconnectTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    keyConceptsHistoryRef.current = keyConceptsHistory;
+  }, [keyConceptsHistory]);
+
+  const handleEndSession = () => {
+    isClosingIntentionalRef.current = true;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    recorderRef.current?.stop();
+    playerRef.current?.stop();
+    sessionRef.current?.then((s: any) => s.close());
+    onEnd();
+  };
+
+  const handleAddManualNote = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userCustomNote.trim()) return;
+    const note = userCustomNote.trim();
+    setKeyConceptsHistory(prev => [note, ...prev.filter(c => c !== note)]);
+    setUserCustomNote("");
+  };
 
   useEffect(() => {
     let isMounted = true;
+    isClosingIntentionalRef.current = false;
 
     const startSession = async () => {
       try {
         setError(null);
-        setIsConnecting(true);
+        if (!isReconnecting) {
+          setIsConnecting(true);
+        }
+
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           micStream.getTracks().forEach(track => track.stop());
-        } catch (micErr) {
-          console.error("Microphone access failed:", micErr);
+        } catch (micErr: any) {
+          console.warn("Microphone access not granted or blocked by browser/iframe:", micErr?.message || micErr);
           if (isMounted) {
-            setError("No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en tu navegador e intenta de nuevo.");
+            setError("No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en tu navegador o abre la app en una nueva pestaña.");
             setIsConnecting(false);
+            setIsReconnecting(false);
           }
           return;
         }
 
+        playerRef.current?.stop();
         playerRef.current = new AudioStreamPlayer(24000);
         
         const session = new WebSocketSession({
           mode: 'topics',
           text,
           topics,
+          previousNotes: keyConceptsHistoryRef.current
         });
         
         const sessionPromise = Promise.resolve(session);
@@ -4936,19 +5025,30 @@ function StudySession({
           onopen: () => {
             if (!isMounted) return;
             setIsConnecting(false);
+            setIsReconnecting(false);
             
-            recorderRef.current = new AudioRecorder((base64) => {
-              sessionPromise.then(session => {
-                session.sendRealtimeInput({
-                  audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+            recorderRef.current?.stop();
+            recorderRef.current = new AudioRecorder(
+              (base64) => {
+                sessionPromise.then(s => {
+                  s.sendRealtimeInput({
+                    audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+                  });
                 });
-              });
-            });
+              },
+              (vol) => {
+                if (isMounted) {
+                  setUserVolume(vol);
+                }
+              }
+            );
+
             recorderRef.current.start().catch((err: any) => {
               console.error("Error starting recording:", err);
               if (isMounted) {
                 setError("No se pudo iniciar el grabador de audio. Por favor verifica los permisos.");
                 setIsConnecting(false);
+                setIsReconnecting(false);
               }
             });
           },
@@ -4981,7 +5081,7 @@ function StudySession({
                         category: cat,
                         suggestedKeywords: suggestedKws
                       });
-                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 10));
+                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 15));
                     }
                     responses.push({
                       id: call.id,
@@ -4991,8 +5091,8 @@ function StudySession({
                   }
                 }
                 if (responses.length > 0) {
-                  sessionPromise.then(session => {
-                    session.sendToolResponse({ functionResponses: responses });
+                  sessionPromise.then(s => {
+                    s.sendToolResponse({ functionResponses: responses });
                   });
                 }
               }
@@ -5014,14 +5114,36 @@ function StudySession({
             }
           },
           onclose: () => {
-            if (isMounted) {
+            if (!isMounted) return;
+            // If the close was NOT initiated by the user, trigger automatic seamless reconnect with memory preserved
+            if (!isClosingIntentionalRef.current) {
+              console.log("Live session closed unexpectedly or reached timeout. Reconnecting seamlessly with discussion memory...");
+              setIsReconnecting(true);
+              recorderRef.current?.stop();
+              playerRef.current?.stop();
+              reconnectTimeoutRef.current = setTimeout(() => {
+                if (isMounted && !isClosingIntentionalRef.current) {
+                  setRetryKey(k => k + 1);
+                }
+              }, 1200);
+            } else {
               onEnd();
             }
           },
           onerror: (err: any) => {
             console.error("Live API Error:", err);
             if (isMounted) {
-              setError(err?.message || "Se perdió la conexión con el tutor.");
+              if (!isClosingIntentionalRef.current) {
+                // Auto-retry once on transient connection drop
+                setIsReconnecting(true);
+                reconnectTimeoutRef.current = setTimeout(() => {
+                  if (isMounted && !isClosingIntentionalRef.current) {
+                    setRetryKey(k => k + 1);
+                  }
+                }, 2000);
+              } else {
+                setError(err?.message || "Se perdió la conexión con el tutor.");
+              }
             }
           }
         });
@@ -5032,6 +5154,7 @@ function StudySession({
         if (isMounted) {
           setError("No se pudo iniciar la sesión. Verifica tus permisos de micrófono.");
           setIsConnecting(false);
+          setIsReconnecting(false);
         }
       }
     };
@@ -5040,14 +5163,19 @@ function StudySession({
 
     return () => {
       isMounted = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       recorderRef.current?.stop();
       playerRef.current?.stop();
       sessionRef.current?.then((s: any) => s.close());
     };
   }, [text, topics, onUnlockTopic, onEnd, retryKey]);
 
+  const isUserTalking = userVolume > 0.04;
+
   return (
-    <div className="flex flex-col lg:flex-row gap-12 items-start justify-center min-h-[70vh] p-6">
+    <div className="flex flex-col lg:flex-row gap-8 items-start justify-center min-h-[70vh] p-6 max-w-7xl mx-auto">
       {/* Topics Grid Sidebar */}
       <div className="w-full lg:w-1/2 grid grid-cols-1 sm:grid-cols-2 gap-4">
         {topics.map((topic, index) => {
@@ -5111,7 +5239,15 @@ function StudySession({
       </div>
 
       {/* Voice Interaction Center */}
-      <div className="w-full lg:w-1/2 flex flex-col items-center justify-center bg-panel-systematic border border-white/5 p-10 shadow-[6px_6px_0px_#161616] sticky top-24">
+      <div className="w-full lg:w-1/2 flex flex-col items-center justify-center bg-panel-systematic border border-white/5 p-8 shadow-[6px_6px_0px_#161616] sticky top-24">
+        {/* Reconnecting notice if renewing session */}
+        {isReconnecting && (
+          <div className="w-full mb-4 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-4 py-2 rounded-lg flex items-center justify-center gap-2 text-xs font-mono animate-pulse">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+            <span>Sincronizando y renovando canal de voz... Manteniendo tus ideas y progreso.</span>
+          </div>
+        )}
+
         {error ? (
           <div className="bg-red-950/20 border border-red-900/30 text-red-400 p-6 rounded-2xl w-full text-center">
             <p className="font-semibold mb-4 text-sm">{error}</p>
@@ -5126,7 +5262,7 @@ function StudySession({
               </div>
             )}
             <button
-              onClick={onEnd}
+              onClick={handleEndSession}
               className="mt-6 bg-red-950/40 hover:bg-red-900/40 text-red-200 border border-red-900/30 px-5 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer"
             >
               Volver al cuaderno
@@ -5134,24 +5270,50 @@ function StudySession({
           </div>
         ) : (
           <div className="flex flex-col items-center w-full">
-            <div className="relative w-48 h-48 mb-6 flex items-center justify-center">
-              {/* Pulsing background rings */}
-              <div className={cn(
-                "absolute inset-0 rounded-full bg-accent-systematic/10 transition-all duration-500",
-                isConnecting ? "animate-ping" : isSpeaking ? "animate-pulse scale-150 opacity-20" : "scale-110"
-              )} />
-              <div className={cn(
-                "absolute inset-4 rounded-full bg-accent-systematic/15 transition-all duration-300",
-                isSpeaking ? "animate-pulse scale-125 opacity-35" : "scale-100"
-              )} />
+            {/* Reactive Voice Orb with Real-Time Microphone Movement */}
+            <div className="relative w-48 h-48 mb-4 flex items-center justify-center">
+              {/* Dynamic Outer Ripple that expands on voice input */}
+              <div 
+                className={cn(
+                  "absolute inset-0 rounded-full transition-all duration-150 ease-out",
+                  isUserTalking ? "bg-emerald-500/20 shadow-[0_0_40px_rgba(16,185,129,0.35)]" : 
+                  isSpeaking ? "bg-amber-500/20 shadow-[0_0_35px_rgba(245,158,11,0.3)] animate-pulse" : 
+                  isConnecting || isReconnecting ? "bg-accent-systematic/10 animate-ping" : "bg-white/5 opacity-40"
+                )}
+                style={{
+                  transform: isUserTalking ? `scale(${1 + Math.min(0.55, userVolume * 0.9)})` : undefined
+                }}
+              />
               
-              {/* Center orb */}
-              <div className={cn(
-                "relative z-10 w-24 h-24 rounded-full flex items-center justify-center shadow-lg transition-all duration-500 border border-white/10",
-                isConnecting ? "bg-bg-systematic text-ink-muted" : "bg-accent-systematic text-black shadow-[4px_4px_0px_#000000]"
-              )}>
-                {isConnecting ? (
+              {/* Intermediate Responsive Ring */}
+              <div 
+                className={cn(
+                  "absolute inset-4 rounded-full transition-all duration-100 ease-out",
+                  isUserTalking ? "bg-emerald-500/30" : 
+                  isSpeaking ? "bg-amber-500/30 animate-pulse" : "bg-white/5 opacity-60"
+                )}
+                style={{
+                  transform: isUserTalking ? `scale(${1 + Math.min(0.35, userVolume * 0.6)})` : undefined
+                }}
+              />
+              
+              {/* Central Reactive Orb */}
+              <div 
+                className={cn(
+                  "relative z-10 w-24 h-24 rounded-full flex items-center justify-center shadow-xl transition-all duration-100 ease-out border",
+                  isConnecting || isReconnecting ? "bg-bg-systematic text-ink-muted border-white/10" :
+                  isUserTalking ? "bg-emerald-500 text-black border-emerald-300 shadow-[0_0_25px_rgba(16,185,129,0.6)]" :
+                  isSpeaking ? "bg-amber-500 text-black border-amber-300 shadow-[0_0_25px_rgba(245,158,11,0.6)]" :
+                  "bg-accent-systematic text-black border-accent-systematic/80 shadow-[4px_4px_0px_#000000]"
+                )}
+                style={{
+                  transform: isUserTalking ? `scale(${1 + Math.min(0.25, userVolume * 0.45)})` : undefined
+                }}
+              >
+                {isConnecting || isReconnecting ? (
                   <Loader2 className="w-8 h-8 animate-spin" />
+                ) : isUserTalking ? (
+                  <Mic className="w-8 h-8 text-black animate-pulse" />
                 ) : isSpeaking ? (
                   <Volume2 className="w-8 h-8 text-black animate-bounce" />
                 ) : (
@@ -5160,27 +5322,68 @@ function StudySession({
               </div>
             </div>
 
-            {/* Siri/Gemini wave indicator */}
-            {!isConnecting && (
-              <div className="flex items-end justify-center gap-1.5 h-8 mb-4">
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-1 h-6" : "h-2")} />
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-2 h-8" : "h-3")} />
-                <div className={cn("w-1 bg-accent-systematic/80 rounded-full transition-all duration-300", isSpeaking ? "animate-wave-3 h-5" : "h-2.5")} />
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-4 h-7" : "h-3")} />
-                <div className={cn("w-1 bg-accent-systematic/60 rounded-full transition-all duration-300", isSpeaking ? "animate-wave-5 h-4" : "h-1.5")} />
+            {/* Real-time Dynamic 9-Band Equalizer Waves */}
+            {!isConnecting && !isReconnecting && (
+              <div className="flex items-end justify-center gap-1.5 h-10 mb-4 px-4 py-1 bg-black/40 rounded-full border border-white/5">
+                {[0.4, 0.7, 1.0, 1.3, 1.5, 1.2, 0.9, 0.6, 0.3].map((mult, idx) => {
+                  const barHeight = isUserTalking 
+                    ? Math.max(6, Math.min(32, userVolume * 36 * mult))
+                    : isSpeaking 
+                      ? (idx % 2 === 0 ? 18 : 26) 
+                      : 4;
+
+                  return (
+                    <div
+                      key={idx}
+                      className={cn(
+                        "w-1.5 rounded-full transition-all duration-75",
+                        isUserTalking ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" :
+                        isSpeaking ? "bg-amber-400 animate-pulse" :
+                        "bg-white/20"
+                      )}
+                      style={{ height: `${barHeight}px` }}
+                    />
+                  );
+                })}
               </div>
             )}
 
-            <div className="text-center mb-4 min-h-[50px]">
-              <h3 className="text-2xl font-black uppercase tracking-tight text-ink mb-1">
-                {isConnecting ? "Conectando..." : isSpeaking ? "Tu Tutor está hablando" : "Tutor escuchando..."}
+            {/* Status Feedback Badge */}
+            <div className="text-center mb-4 min-h-[52px]">
+              <div className="flex items-center justify-center mb-1">
+                {isConnecting || isReconnecting ? (
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold text-amber-400 bg-amber-950/40 border border-amber-500/30 px-3 py-0.5 rounded-full">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Sincronizando canal de voz...
+                  </span>
+                ) : isUserTalking ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-500/50 px-3.5 py-1 rounded-full shadow-[0_0_12px_rgba(16,185,129,0.3)] animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                    ¡Te estoy escuchando! (Voz detectada)
+                  </span>
+                ) : isSpeaking ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold text-amber-300 bg-amber-950/60 border border-amber-500/50 px-3.5 py-1 rounded-full">
+                    <Volume2 className="w-3 h-3 text-amber-400" />
+                    Tutor explicando...
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-400 bg-white/5 border border-white/10 px-3 py-0.5 rounded-full">
+                    <Mic className="w-3 h-3 text-accent-systematic" />
+                    Tutor atento a tu voz...
+                  </span>
+                )}
+              </div>
+
+              <h3 className="text-xl font-black uppercase tracking-tight text-ink mt-2">
+                {isConnecting || isReconnecting ? "Conectando..." : isUserTalking ? "Hablando..." : isSpeaking ? "Tu Tutor está hablando" : "Listo para escucharte"}
               </h3>
-              <p className="text-ink-muted text-xs px-4 font-sans">
-                {isConnecting 
+              <p className="text-ink-muted text-xs px-4 font-sans mt-1">
+                {isConnecting || isReconnecting 
                   ? "Sincronizando el cuaderno con el motor de voz..." 
-                  : isSpeaking 
-                    ? "Presta atención a la explicación, pregunta o pista" 
-                    : "Respóndele directamente por voz para desbloquear la siguiente ficha"}
+                  : isUserTalking
+                    ? "El tutor está recibiendo tu respuesta en vivo..."
+                    : isSpeaking 
+                      ? "Presta atención a la explicación, pregunta o pista" 
+                      : "Respóndele directamente por voz para desbloquear la siguiente ficha"}
               </p>
             </div>
 
@@ -5192,7 +5395,7 @@ function StudySession({
                   initial={{ opacity: 0, y: 10, scale: 0.95 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -10 }}
-                  className="w-full bg-gradient-to-r from-amber-500/10 via-accent-systematic/15 to-amber-500/10 border border-accent-systematic/40 rounded-xl text-center my-4 shadow-[0_0_20px_rgba(255,77,0,0.15)] relative overflow-hidden"
+                  className="w-full bg-gradient-to-r from-amber-500/10 via-accent-systematic/15 to-amber-500/10 border border-accent-systematic/40 rounded-xl text-center my-3 shadow-[0_0_20px_rgba(255,77,0,0.15)] relative overflow-hidden"
                 >
                   <div className="p-4">
                     <div className="flex items-center justify-center gap-1.5 mb-1">
@@ -5232,25 +5435,56 @@ function StudySession({
               )}
             </AnimatePresence>
 
-            {/* Key words history pills */}
-            {keyConceptsHistory.length > 0 && (
-              <div className="w-full mb-6 bg-bg-systematic/60 border border-white/5 p-3 rounded-lg text-left">
-                <span className="font-mono text-[8px] text-ink-muted uppercase tracking-widest block mb-2 font-bold">
-                  Palabras e Ideas Clave de la Sesión:
+            {/* Live Conversation Memory & Key Notes Board */}
+            <div className="w-full my-4 bg-bg-systematic/80 border border-white/10 rounded-xl p-4 text-left">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5">
+                  <BookOpen className="w-3.5 h-3.5 text-accent-systematic" />
+                  <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest font-bold">
+                    Memoria y Notas de esta Charla ({keyConceptsHistory.length})
+                  </span>
+                </div>
+                <span className="text-[8px] font-mono text-ink-muted">
+                  Se mantiene durante la llamada y se borra al salir
                 </span>
-                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+              </div>
+
+              {keyConceptsHistory.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto mb-3 pr-1">
                   {keyConceptsHistory.map((concept, idx) => (
                     <span
                       key={idx}
-                      className="inline-flex items-center gap-1 bg-white/5 border border-white/10 text-white font-mono text-[9px] px-2 py-0.5 rounded"
+                      className="inline-flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-200 font-mono text-[9px] px-2.5 py-1 rounded-md transition-colors"
                     >
-                      <span className="text-accent-systematic font-bold">▪</span>
+                      <span className="text-accent-systematic font-bold">✓</span>
                       {concept}
                     </span>
                   ))}
                 </div>
-              </div>
-            )}
+              ) : (
+                <p className="text-[10px] text-ink-muted italic mb-3">
+                  A medida que conversen o analicen temas, las ideas clave se anotarán aquí automáticamente y servirán de memoria activa para el tutor.
+                </p>
+              )}
+
+              {/* Add manual note to active memory */}
+              <form onSubmit={handleAddManualNote} className="flex gap-2">
+                <input
+                  type="text"
+                  value={userCustomNote}
+                  onChange={(e) => setUserCustomNote(e.target.value)}
+                  placeholder="Añadir una idea o apunte a la memoria del tutor..."
+                  className="flex-1 bg-black/50 border border-white/10 text-white font-sans text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-accent-systematic placeholder:text-ink-muted"
+                />
+                <button
+                  type="submit"
+                  disabled={!userCustomNote.trim()}
+                  className="bg-white/10 hover:bg-accent-systematic hover:text-black disabled:opacity-40 text-white font-mono text-[9px] uppercase px-3 py-1.5 rounded-lg transition-colors font-bold cursor-pointer"
+                >
+                  Anotar
+                </button>
+              </form>
+            </div>
 
             <div className="w-full bg-bg-systematic rounded-full h-2 mb-4 overflow-hidden border border-white/5">
               <div 
@@ -5258,15 +5492,15 @@ function StudySession({
                 style={{ width: `${topics.length > 0 ? (unlockedTopics.length / topics.length) * 100 : 0}%` }}
               />
             </div>
-            <p className="text-[10px] text-ink-muted font-mono font-bold mb-8 uppercase tracking-widest bg-bg-systematic px-3 py-1.5 border border-white/5">
+            <p className="text-[10px] text-ink-muted font-mono font-bold mb-6 uppercase tracking-widest bg-bg-systematic px-3 py-1.5 border border-white/5">
               Progreso: <span className="text-accent-systematic font-bold">{unlockedTopics.length}</span> de <span className="text-white font-bold">{topics.length}</span> fichas completadas
             </p>
 
             <button
-              onClick={onEnd}
-              className="bg-bg-systematic border border-white/5 hover:border-accent-systematic hover:bg-accent-systematic hover:text-black text-ink font-mono text-[10px] uppercase tracking-widest py-3 px-8 transition-all duration-200 active:scale-[0.98] cursor-pointer"
+              onClick={handleEndSession}
+              className="bg-bg-systematic border border-white/10 hover:border-accent-systematic hover:bg-accent-systematic hover:text-black text-ink font-mono text-[10px] uppercase tracking-widest py-3 px-8 transition-all duration-200 active:scale-[0.98] cursor-pointer rounded-lg"
             >
-              Pausar Sesión de Voz
+              Terminar Sesión de Voz
             </button>
           </div>
         )}
@@ -5283,40 +5517,76 @@ function FreeStudySession({
   onEnd: () => void; 
 }) {
   const [isConnecting, setIsConnecting] = useState(true);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [userVolume, setUserVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
+  const [userCustomNote, setUserCustomNote] = useState("");
   
   const sessionRef = useRef<any>(null);
   const playerRef = useRef<AudioStreamPlayer | null>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
+  const isClosingIntentionalRef = useRef(false);
+  const keyConceptsHistoryRef = useRef<string[]>([]);
+  const reconnectTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    keyConceptsHistoryRef.current = keyConceptsHistory;
+  }, [keyConceptsHistory]);
+
+  const handleEndSession = () => {
+    isClosingIntentionalRef.current = true;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    recorderRef.current?.stop();
+    playerRef.current?.stop();
+    sessionRef.current?.then((s: any) => s.close());
+    onEnd();
+  };
+
+  const handleAddManualNote = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userCustomNote.trim()) return;
+    const note = userCustomNote.trim();
+    setKeyConceptsHistory(prev => [note, ...prev.filter(c => c !== note)]);
+    setUserCustomNote("");
+  };
 
   useEffect(() => {
     let isMounted = true;
+    isClosingIntentionalRef.current = false;
 
     const startSession = async () => {
       try {
         setError(null);
-        setIsConnecting(true);
+        if (!isReconnecting) {
+          setIsConnecting(true);
+        }
+
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           micStream.getTracks().forEach(track => track.stop());
-        } catch (micErr) {
-          console.error("Microphone access failed:", micErr);
+        } catch (micErr: any) {
+          console.warn("Microphone access not granted or blocked by browser/iframe:", micErr?.message || micErr);
           if (isMounted) {
-            setError("No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en tu navegador e intenta de nuevo.");
+            setError("No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en tu navegador o abre la app en una nueva pestaña.");
             setIsConnecting(false);
+            setIsReconnecting(false);
           }
           return;
         }
 
+        playerRef.current?.stop();
         playerRef.current = new AudioStreamPlayer(24000);
         
         const session = new WebSocketSession({
           mode: 'free',
           text,
+          previousNotes: keyConceptsHistoryRef.current
         });
 
         const sessionPromise = Promise.resolve(session);
@@ -5325,19 +5595,30 @@ function FreeStudySession({
           onopen: () => {
             if (!isMounted) return;
             setIsConnecting(false);
+            setIsReconnecting(false);
             
-            recorderRef.current = new AudioRecorder((base64) => {
-              sessionPromise.then(session => {
-                session.sendRealtimeInput({
-                  audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+            recorderRef.current?.stop();
+            recorderRef.current = new AudioRecorder(
+              (base64) => {
+                sessionPromise.then(s => {
+                  s.sendRealtimeInput({
+                    audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+                  });
                 });
-              });
-            });
+              },
+              (vol) => {
+                if (isMounted) {
+                  setUserVolume(vol);
+                }
+              }
+            );
+
             recorderRef.current.start().catch((err: any) => {
               console.error("Error starting recording:", err);
               if (isMounted) {
                 setError("No se pudo iniciar el grabador de audio. Por favor verifica los permisos.");
                 setIsConnecting(false);
+                setIsReconnecting(false);
               }
             });
           },
@@ -5360,7 +5641,7 @@ function FreeStudySession({
                         category: cat,
                         suggestedKeywords: suggestedKws
                       });
-                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 10));
+                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 15));
                     }
                     responses.push({
                       id: call.id,
@@ -5370,8 +5651,8 @@ function FreeStudySession({
                   }
                 }
                 if (responses.length > 0) {
-                  sessionPromise.then(session => {
-                    session.sendToolResponse({ functionResponses: responses });
+                  sessionPromise.then(s => {
+                    s.sendToolResponse({ functionResponses: responses });
                   });
                 }
               }
@@ -5393,14 +5674,35 @@ function FreeStudySession({
             }
           },
           onclose: () => {
-            if (isMounted) {
+            if (!isMounted) return;
+            // If the close was NOT initiated by the user, trigger automatic seamless reconnect with memory preserved
+            if (!isClosingIntentionalRef.current) {
+              console.log("Free voice session closed unexpectedly or reached timeout. Reconnecting seamlessly with discussion memory...");
+              setIsReconnecting(true);
+              recorderRef.current?.stop();
+              playerRef.current?.stop();
+              reconnectTimeoutRef.current = setTimeout(() => {
+                if (isMounted && !isClosingIntentionalRef.current) {
+                  setRetryKey(k => k + 1);
+                }
+              }, 1200);
+            } else {
               onEnd();
             }
           },
           onerror: (err: any) => {
             console.error("Live API Error:", err);
             if (isMounted) {
-              setError(err?.message || "Se perdió la conexión con el tutor.");
+              if (!isClosingIntentionalRef.current) {
+                setIsReconnecting(true);
+                reconnectTimeoutRef.current = setTimeout(() => {
+                  if (isMounted && !isClosingIntentionalRef.current) {
+                    setRetryKey(k => k + 1);
+                  }
+                }, 2000);
+              } else {
+                setError(err?.message || "Se perdió la conexión con el tutor.");
+              }
             }
           }
         });
@@ -5411,6 +5713,7 @@ function FreeStudySession({
         if (isMounted) {
           setError("No se pudo iniciar la sesión. Verifica tus permisos de micrófono.");
           setIsConnecting(false);
+          setIsReconnecting(false);
         }
       }
     };
@@ -5419,15 +5722,28 @@ function FreeStudySession({
 
     return () => {
       isMounted = false;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       recorderRef.current?.stop();
       playerRef.current?.stop();
       sessionRef.current?.then((s: any) => s.close());
     };
   }, [text, onEnd, retryKey]);
 
+  const isUserTalking = userVolume > 0.04;
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-2xl mx-auto p-6 animate-in fade-in duration-300">
-      <div className="w-full flex flex-col items-center justify-center bg-panel-systematic border border-white/5 p-12 shadow-[6px_6px_0px_#161616]">
+    <div className="flex flex-col items-center justify-center min-h-[60vh] max-w-3xl mx-auto p-6 animate-in fade-in duration-300">
+      <div className="w-full flex flex-col items-center justify-center bg-panel-systematic border border-white/5 p-8 sm:p-12 shadow-[6px_6px_0px_#161616] rounded-2xl">
+        {/* Reconnecting notice if renewing session */}
+        {isReconnecting && (
+          <div className="w-full mb-6 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-4 py-2.5 rounded-xl flex items-center justify-center gap-2 text-xs font-mono animate-pulse">
+            <RefreshCw className="w-4 h-4 animate-spin text-amber-400" />
+            <span>Sincronizando y renovando canal de voz... Manteniendo tus notas y el contexto de la charla.</span>
+          </div>
+        )}
+
         {error ? (
           <div className="bg-red-950/20 border border-red-900/30 text-red-400 p-6 rounded-2xl w-full text-center">
             <p className="font-semibold mb-4 text-sm">{error}</p>
@@ -5442,7 +5758,7 @@ function FreeStudySession({
               </div>
             )}
             <button
-              onClick={onEnd}
+              onClick={handleEndSession}
               className="mt-6 bg-red-950/40 hover:bg-red-900/40 text-red-200 border border-red-900/30 px-5 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer"
             >
               Volver al cuaderno
@@ -5450,24 +5766,50 @@ function FreeStudySession({
           </div>
         ) : (
           <div className="flex flex-col items-center w-full">
+            {/* Reactive Voice Orb with Real-Time Microphone Movement */}
             <div className="relative w-48 h-48 mb-6 flex items-center justify-center">
-              {/* Pulsing background rings */}
-              <div className={cn(
-                "absolute inset-0 rounded-full bg-accent-systematic/10 transition-all duration-500",
-                isConnecting ? "animate-ping" : isSpeaking ? "animate-pulse scale-150 opacity-20" : "scale-110"
-              )} />
-              <div className={cn(
-                "absolute inset-4 rounded-full bg-accent-systematic/15 transition-all duration-300",
-                isSpeaking ? "animate-pulse scale-125 opacity-35" : "scale-100"
-              )} />
+              {/* Dynamic Outer Ripple that expands on voice input */}
+              <div 
+                className={cn(
+                  "absolute inset-0 rounded-full transition-all duration-150 ease-out",
+                  isUserTalking ? "bg-emerald-500/20 shadow-[0_0_40px_rgba(16,185,129,0.35)]" : 
+                  isSpeaking ? "bg-amber-500/20 shadow-[0_0_35px_rgba(245,158,11,0.3)] animate-pulse" : 
+                  isConnecting || isReconnecting ? "bg-accent-systematic/10 animate-ping" : "bg-white/5 opacity-40"
+                )}
+                style={{
+                  transform: isUserTalking ? `scale(${1 + Math.min(0.55, userVolume * 0.9)})` : undefined
+                }}
+              />
               
-              {/* Center orb */}
-              <div className={cn(
-                "relative z-10 w-24 h-24 rounded-full flex items-center justify-center shadow-lg transition-all duration-500 border border-white/10",
-                isConnecting ? "bg-bg-systematic text-ink-muted" : "bg-accent-systematic text-black shadow-[4px_4px_0px_#000000]"
-              )}>
-                {isConnecting ? (
+              {/* Intermediate Responsive Ring */}
+              <div 
+                className={cn(
+                  "absolute inset-4 rounded-full transition-all duration-100 ease-out",
+                  isUserTalking ? "bg-emerald-500/30" : 
+                  isSpeaking ? "bg-amber-500/30 animate-pulse" : "bg-white/5 opacity-60"
+                )}
+                style={{
+                  transform: isUserTalking ? `scale(${1 + Math.min(0.35, userVolume * 0.6)})` : undefined
+                }}
+              />
+              
+              {/* Central Reactive Orb */}
+              <div 
+                className={cn(
+                  "relative z-10 w-24 h-24 rounded-full flex items-center justify-center shadow-xl transition-all duration-100 ease-out border",
+                  isConnecting || isReconnecting ? "bg-bg-systematic text-ink-muted border-white/10" :
+                  isUserTalking ? "bg-emerald-500 text-black border-emerald-300 shadow-[0_0_25px_rgba(16,185,129,0.6)]" :
+                  isSpeaking ? "bg-amber-500 text-black border-amber-300 shadow-[0_0_25px_rgba(245,158,11,0.6)]" :
+                  "bg-accent-systematic text-black border-accent-systematic/80 shadow-[4px_4px_0px_#000000]"
+                )}
+                style={{
+                  transform: isUserTalking ? `scale(${1 + Math.min(0.25, userVolume * 0.45)})` : undefined
+                }}
+              >
+                {isConnecting || isReconnecting ? (
                   <Loader2 className="w-8 h-8 animate-spin" />
+                ) : isUserTalking ? (
+                  <Mic className="w-8 h-8 text-black animate-pulse" />
                 ) : isSpeaking ? (
                   <Volume2 className="w-8 h-8 text-black animate-bounce" />
                 ) : (
@@ -5476,30 +5818,68 @@ function FreeStudySession({
               </div>
             </div>
 
-            {/* Siri/Gemini wave indicator */}
-            {!isConnecting && (
-              <div className="flex items-end justify-center gap-1.5 h-8 mb-4">
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-1 h-6" : "h-2")} />
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-2 h-8" : "h-3")} />
-                <div className={cn("w-1 bg-accent-systematic/80 rounded-full transition-all duration-300", isSpeaking ? "animate-wave-3 h-5" : "h-2.5")} />
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-4 h-7" : "h-3")} />
-                <div className={cn("w-1 bg-accent-systematic/60 rounded-full transition-all duration-300", isSpeaking ? "animate-wave-5 h-4" : "h-1.5")} />
+            {/* Real-time Dynamic 9-Band Equalizer Waves */}
+            {!isConnecting && !isReconnecting && (
+              <div className="flex items-end justify-center gap-1.5 h-10 mb-4 px-4 py-1 bg-black/40 rounded-full border border-white/5">
+                {[0.4, 0.7, 1.0, 1.3, 1.5, 1.2, 0.9, 0.6, 0.3].map((mult, idx) => {
+                  const barHeight = isUserTalking 
+                    ? Math.max(6, Math.min(32, userVolume * 36 * mult))
+                    : isSpeaking 
+                      ? (idx % 2 === 0 ? 18 : 26) 
+                      : 4;
+
+                  return (
+                    <div
+                      key={idx}
+                      className={cn(
+                        "w-1.5 rounded-full transition-all duration-75",
+                        isUserTalking ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" :
+                        isSpeaking ? "bg-amber-400 animate-pulse" :
+                        "bg-white/20"
+                      )}
+                      style={{ height: `${barHeight}px` }}
+                    />
+                  );
+                })}
               </div>
             )}
 
-            <div className="text-center mb-4 min-h-[50px]">
-              <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest block mb-1">
-                Asistente de Voz / Modo Libre
-              </span>
-              <h3 className="text-2xl font-black uppercase tracking-tight text-ink mb-2">
-                {isConnecting ? "Iniciando tutoría libre..." : isSpeaking ? "Tutor explicando..." : "Tutor escuchando..."}
+            {/* Status Feedback Badge */}
+            <div className="text-center mb-4 min-h-[52px]">
+              <div className="flex items-center justify-center mb-1">
+                {isConnecting || isReconnecting ? (
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold text-amber-400 bg-amber-950/40 border border-amber-500/30 px-3 py-0.5 rounded-full">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Sincronizando canal de voz...
+                  </span>
+                ) : isUserTalking ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-500/50 px-3.5 py-1 rounded-full shadow-[0_0_12px_rgba(16,185,129,0.3)] animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                    ¡Te estoy escuchando! (Voz detectada)
+                  </span>
+                ) : isSpeaking ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold text-amber-300 bg-amber-950/60 border border-amber-500/50 px-3.5 py-1 rounded-full">
+                    <Volume2 className="w-3 h-3 text-amber-400" />
+                    Tutor explicando...
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-mono text-zinc-400 bg-white/5 border border-white/10 px-3 py-0.5 rounded-full">
+                    <Mic className="w-3 h-3 text-accent-systematic" />
+                    Tutor atento a tu voz...
+                  </span>
+                )}
+              </div>
+
+              <h3 className="text-2xl font-black uppercase tracking-tight text-ink mt-2 mb-1">
+                {isConnecting || isReconnecting ? "Iniciando tutoría..." : isUserTalking ? "Hablando..." : isSpeaking ? "Tutor explicando..." : "Tutor escuchando..."}
               </h3>
-              <p className="text-ink-muted text-xs px-6 leading-relaxed max-w-sm mx-auto font-sans">
-                {isConnecting 
+              <p className="text-ink-muted text-xs px-6 leading-relaxed max-w-md mx-auto font-sans">
+                {isConnecting || isReconnecting 
                   ? "Conectando al canal de voz de Gemini..." 
-                  : isSpeaking 
-                    ? "Escucha atentamente el análisis de tu cuaderno" 
-                    : "Haz cualquier pregunta en voz alta sobre el texto y te responderé de inmediato"}
+                  : isUserTalking
+                    ? "Habla con naturalidad, el tutor está procesando tus ideas..."
+                    : isSpeaking 
+                      ? "Escucha atentamente el análisis de tu cuaderno" 
+                      : "Haz cualquier pregunta en voz alta sobre el texto o reflexiona libremente y te responderé"}
               </p>
             </div>
 
@@ -5551,29 +5931,60 @@ function FreeStudySession({
               )}
             </AnimatePresence>
 
-            {/* Key words history pills */}
-            {keyConceptsHistory.length > 0 && (
-              <div className="w-full mb-6 bg-bg-systematic/60 border border-white/5 p-3 rounded-lg text-left">
-                <span className="font-mono text-[8px] text-ink-muted uppercase tracking-widest block mb-2 font-bold">
-                  Palabras e Ideas Clave de la Sesión:
+            {/* Live Conversation Memory & Key Notes Board */}
+            <div className="w-full my-4 bg-bg-systematic/80 border border-white/10 rounded-xl p-4 text-left">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5">
+                  <BookOpen className="w-3.5 h-3.5 text-accent-systematic" />
+                  <span className="font-mono text-[9px] text-accent-systematic uppercase tracking-widest font-bold">
+                    Memoria y Notas de esta Charla ({keyConceptsHistory.length})
+                  </span>
+                </div>
+                <span className="text-[8px] font-mono text-ink-muted">
+                  Se mantiene durante la llamada y se borra al salir
                 </span>
-                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+              </div>
+
+              {keyConceptsHistory.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto mb-3 pr-1">
                   {keyConceptsHistory.map((concept, idx) => (
                     <span
                       key={idx}
-                      className="inline-flex items-center gap-1 bg-white/5 border border-white/10 text-white font-mono text-[9px] px-2 py-0.5 rounded"
+                      className="inline-flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-200 font-mono text-[9px] px-2.5 py-1 rounded-md transition-colors"
                     >
-                      <span className="text-accent-systematic font-bold">▪</span>
+                      <span className="text-accent-systematic font-bold">✓</span>
                       {concept}
                     </span>
                   ))}
                 </div>
-              </div>
-            )}
+              ) : (
+                <p className="text-[10px] text-ink-muted italic mb-3">
+                  A medida que conversen o analicen temas, las ideas clave se anotarán aquí automáticamente y servirán de memoria activa para el tutor.
+                </p>
+              )}
+
+              {/* Add manual note to active memory */}
+              <form onSubmit={handleAddManualNote} className="flex gap-2">
+                <input
+                  type="text"
+                  value={userCustomNote}
+                  onChange={(e) => setUserCustomNote(e.target.value)}
+                  placeholder="Añadir una idea o apunte a la memoria del tutor..."
+                  className="flex-1 bg-black/50 border border-white/10 text-white font-sans text-xs px-3 py-1.5 rounded-lg focus:outline-none focus:border-accent-systematic placeholder:text-ink-muted"
+                />
+                <button
+                  type="submit"
+                  disabled={!userCustomNote.trim()}
+                  className="bg-white/10 hover:bg-accent-systematic hover:text-black disabled:opacity-40 text-white font-mono text-[9px] uppercase px-3 py-1.5 rounded-lg transition-colors font-bold cursor-pointer"
+                >
+                  Anotar
+                </button>
+              </form>
+            </div>
 
             <button
-              onClick={onEnd}
-              className="bg-bg-systematic border border-white/5 hover:border-accent-systematic hover:bg-accent-systematic hover:text-black text-ink font-mono text-[10px] uppercase tracking-widest py-3 px-8 transition-all duration-200 active:scale-[0.98] cursor-pointer"
+              onClick={handleEndSession}
+              className="mt-2 bg-bg-systematic border border-white/10 hover:border-accent-systematic hover:bg-accent-systematic hover:text-black text-ink font-mono text-[10px] uppercase tracking-widest py-3 px-8 transition-all duration-200 active:scale-[0.98] cursor-pointer rounded-lg"
             >
               Terminar Sesión Libre
             </button>

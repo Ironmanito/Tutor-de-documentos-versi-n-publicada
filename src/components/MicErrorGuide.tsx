@@ -21,9 +21,18 @@ export function MicErrorGuide({ onRetry }: { onRetry?: () => void }) {
               <ExternalLink className="w-4 h-4 text-amber-400 shrink-0" />
               ¡Solución en 1 paso!
             </h5>
-            <p className="text-slate-200 text-xs leading-relaxed">
-              Haz clic en <strong>"Open in new tab"</strong> (arriba a la derecha de AI Studio) para abrir la app en una pestaña propia sin restricciones.
+            <p className="text-slate-200 text-xs leading-relaxed mb-2">
+              Abre la aplicación en una pestaña propia para que el navegador te solicite permiso de micrófono de forma estándar.
             </p>
+            <a
+              href={typeof window !== 'undefined' ? window.location.href : '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-xs transition-colors cursor-pointer shadow-md"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Abrir en nueva pestaña
+            </a>
           </div>
         </>
       ) : (

@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Sparkles, Brain, Mic, Volume2, HelpCircle, ArrowLeft, ArrowRight, 
+  Sparkles, Brain, Mic, MicOff, Volume2, HelpCircle, ArrowLeft, ArrowRight, 
   Trash2, CheckCircle2, Award, Calendar, ChevronRight, FileText, 
-  Lock, Unlock, Play, RefreshCw, Loader2, BookOpen, Clock, AlertCircle, Key 
+  Lock, Unlock, Play, RefreshCw, Loader2, BookOpen, Clock, AlertCircle, Key,
+  Send, MessageSquare, RotateCcw
 } from 'lucide-react';
 import { AudioStreamPlayer, AudioRecorder } from '../lib/audio';
 import { cn } from '../lib/utils';
@@ -626,10 +627,15 @@ export function OralEvaluatorSession({
 }: SessionProps) {
   const [isConnecting, setIsConnecting] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [userVolume, setUserVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [manualTextAnswer, setManualTextAnswer] = useState("");
+  const [isSendingManual, setIsSendingManual] = useState(false);
+  const [isEvaluatingTurn, setIsEvaluatingTurn] = useState(false);
   
   // Find current question index (first question that has no userAnswer)
   const currentQuestionIdx = session.questions.findIndex(q => q.userAnswer === undefined);
@@ -641,9 +647,96 @@ export function OralEvaluatorSession({
   const socketSessionRef = useRef<any>(null);
   const playerRef = useRef<AudioStreamPlayer | null>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
+  const isClosingIntentionalRef = useRef(false);
+  const userSpokeRecentlyRef = useRef(false);
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleFinishAnswer = () => {
+    if (socketSessionRef.current) {
+      setIsEvaluatingTurn(true);
+      userSpokeRecentlyRef.current = false;
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = null;
+      }
+      socketSessionRef.current.then((s: any) => {
+        try {
+          s.sendRealtimeInput({
+            text: `[El estudiante ha finalizado de responder verbalmente a la Pregunta ${activeQuestionIndex + 1}]. Por favor evalúa de inmediato su respuesta usando la función submitOralAnswer con questionIndex: ${activeQuestionIndex}, califícala del 0 al 100 y dale tu devolución oral formulando la siguiente pregunta.`
+          });
+        } catch (e) {
+          console.warn("Error triggering finish answer:", e);
+        } finally {
+          setTimeout(() => setIsEvaluatingTurn(false), 5000);
+        }
+      });
+    }
+  };
+
+  const handleRepeatQuestion = () => {
+    if (socketSessionRef.current) {
+      socketSessionRef.current.then((s: any) => {
+        try {
+          s.sendRealtimeInput({
+            text: `Por favor vuelve a formular oralmente de forma clara la Pregunta ${activeQuestionIndex + 1}: "${localSession.questions[activeQuestionIndex]?.questionText}".`
+          });
+        } catch (e) {
+          console.warn("Error repeating question:", e);
+        }
+      });
+    }
+  };
+
+  const handleSendManualAnswer = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualTextAnswer.trim() || isSendingManual) return;
+    setIsSendingManual(true);
+    setIsEvaluatingTurn(true);
+    userSpokeRecentlyRef.current = false;
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    if (socketSessionRef.current) {
+      socketSessionRef.current.then((s: any) => {
+        try {
+          s.sendRealtimeInput({
+            text: `[RESPUESTA DEL ESTUDIANTE A LA PREGUNTA ${activeQuestionIndex + 1}]: "${manualTextAnswer.trim()}". Evalúa esta respuesta ahora mismo usando la función submitOralAnswer con questionIndex: ${activeQuestionIndex} y dame tu veredicto oral.`
+          });
+          setManualTextAnswer("");
+          setShowTextInput(false);
+        } catch (e) {
+          console.warn("Error sending manual answer:", e);
+        } finally {
+          setIsSendingManual(false);
+          setTimeout(() => setIsEvaluatingTurn(false), 5000);
+        }
+      });
+    } else {
+      setIsSendingManual(false);
+      setIsEvaluatingTurn(false);
+    }
+  };
+
+  const handleEndSession = () => {
+    isClosingIntentionalRef.current = true;
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    recorderRef.current?.stop();
+    playerRef.current?.stop();
+    socketSessionRef.current?.then((s: any) => {
+      try {
+        s.close();
+      } catch (_) {}
+    });
+    onEnd();
+  };
 
   useEffect(() => {
     let isMounted = true;
+    isClosingIntentionalRef.current = false;
 
     const startSession = async () => {
       try {
@@ -653,15 +746,16 @@ export function OralEvaluatorSession({
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           micStream.getTracks().forEach(track => track.stop());
-        } catch (micErr) {
-          console.error("Microphone access failed for oral exam:", micErr);
+        } catch (micErr: any) {
+          console.warn("Microphone access not granted or blocked by browser/iframe for oral exam:", micErr?.message || micErr);
           if (isMounted) {
-            setError("No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en tu navegador e intenta de nuevo.");
+            setError("No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en tu navegador o abre la app en una nueva pestaña.");
             setIsConnecting(false);
           }
           return;
         }
 
+        playerRef.current?.stop();
         playerRef.current = new AudioStreamPlayer(24000);
         
         const socket = new WebSocketSessionClass({
@@ -672,19 +766,51 @@ export function OralEvaluatorSession({
         });
         
         const socketPromise = Promise.resolve(socket);
+        socketSessionRef.current = socketPromise;
 
         socket.setCallbacks({
           onopen: () => {
             if (!isMounted) return;
             setIsConnecting(false);
             
-            recorderRef.current = new AudioRecorder((base64) => {
-              socketPromise.then(s => {
-                s.sendRealtimeInput({
-                  audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+            recorderRef.current?.stop();
+            recorderRef.current = new AudioRecorder(
+              (base64) => {
+                socketPromise.then(s => {
+                  s.sendRealtimeInput({
+                    audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+                  });
                 });
-              });
-            });
+              },
+              (vol) => {
+                if (isMounted) {
+                  setUserVolume(vol);
+                  // Automatic silence & voice activity detection
+                  if (vol > 0.055) {
+                    userSpokeRecentlyRef.current = true;
+                    if (silenceTimeoutRef.current) {
+                      clearTimeout(silenceTimeoutRef.current);
+                      silenceTimeoutRef.current = null;
+                    }
+                  } else if (vol <= 0.03 && userSpokeRecentlyRef.current && !isSpeaking) {
+                    if (!silenceTimeoutRef.current) {
+                      silenceTimeoutRef.current = setTimeout(() => {
+                        if (userSpokeRecentlyRef.current && !isSpeaking && isMounted) {
+                          userSpokeRecentlyRef.current = false;
+                          socketPromise.then(s => {
+                            try {
+                              s.sendRealtimeInput({
+                                text: `[Pausa de silencio detectada tras hablar]. Si el estudiante ya respondió a la Pregunta ${activeQuestionIndex + 1}, evalúa de inmediato con submitOralAnswer y continúa el examen.`
+                              });
+                            } catch (_) {}
+                          });
+                        }
+                      }, 2600);
+                    }
+                  }
+                }
+              }
+            );
             
             recorderRef.current.start().catch((err: any) => {
               console.error("Error starting recording in oral exam:", err);
@@ -692,6 +818,14 @@ export function OralEvaluatorSession({
                 setError("No se pudo iniciar el grabador de audio. Por favor verifica los permisos.");
                 setIsConnecting(false);
               }
+            });
+
+            // Proactively prompt examiner to greet student and ask Question 1 right away
+            socketPromise.then(s => {
+              const currentQ = session.questions[activeQuestionIndex]?.questionText || session.questions[0]?.questionText;
+              s.sendRealtimeInput({
+                text: `Hola evaluador. Estoy listo para comenzar el examen oral sobre el tema "${session.topicTitle}". Por favor salúdame cordialmente, explícame brevemente que me evaluarás en 5 preguntas y formula claramente la Pregunta ${activeQuestionIndex + 1}: "${currentQ}".`
+              });
             });
           },
           onmessage: (message: any) => {
@@ -704,14 +838,24 @@ export function OralEvaluatorSession({
                 const responses: any[] = [];
                 for (const call of functionCalls) {
                   if (call.name === 'submitOralAnswer') {
+                    setIsEvaluatingTurn(false);
+                    userSpokeRecentlyRef.current = false;
+                    if (silenceTimeoutRef.current) {
+                      clearTimeout(silenceTimeoutRef.current);
+                      silenceTimeoutRef.current = null;
+                    }
                     const args = call.args as any;
-                    if (args && args.questionIndex !== undefined) {
-                      const qidx = args.questionIndex;
-                      const score = args.score;
-                      const feedback = args.feedback;
-                      const userAnswerTranscript = args.userAnswerTranscript;
-                      const strengths = args.strengths;
-                      const toImprove = args.toImprove;
+                    if (args) {
+                      const rawIdx = args.questionIndex;
+                      let qidx = typeof rawIdx === 'number' ? rawIdx : parseInt(rawIdx, 10);
+                      if (isNaN(qidx) || qidx < 0 || qidx > 4) {
+                        qidx = activeQuestionIndex;
+                      }
+                      const score = typeof args.score === 'number' ? args.score : (parseInt(args.score, 10) || 70);
+                      const feedback = args.feedback || "Respuesta evaluada por el examinador.";
+                      const userAnswerTranscript = args.userAnswerTranscript || "Respuesta oral del estudiante.";
+                      const strengths = args.strengths || "Argumentación expuesta durante el examen.";
+                      const toImprove = args.toImprove || "Profundizar en los conceptos del cuaderno.";
 
                       // Update state locally & trigger save
                       setLocalSession(prev => {
@@ -841,7 +985,11 @@ export function OralEvaluatorSession({
       isMounted = false;
       recorderRef.current?.stop();
       playerRef.current?.stop();
-      socketSessionRef.current?.then((s: any) => s.close());
+      socketSessionRef.current?.then((s: any) => {
+        try {
+          s.close();
+        } catch (_) {}
+      });
     };
   }, [studyText, session.topicTitle, WebSocketSessionClass, retryKey]);
 
@@ -852,6 +1000,8 @@ export function OralEvaluatorSession({
       setActiveQuestionIndex(answeredCount);
     }
   }, [localSession.questions]);
+
+  const isUserSpeaking = userVolume > 0.06;
 
   return (
     <div className="flex flex-col lg:flex-row gap-8 items-start justify-center min-h-[75vh] p-4 sm:p-6 animate-in fade-in duration-300">
@@ -871,7 +1021,6 @@ export function OralEvaluatorSession({
           {localSession.questions.map((q, idx) => {
             const isCompleted = q.userAnswer !== undefined;
             const isActive = idx === activeQuestionIndex && !localSession.isCompleted;
-            const isPending = !isCompleted && !isActive;
 
             return (
               <div 
@@ -963,12 +1112,20 @@ export function OralEvaluatorSession({
                 <MicErrorGuide onRetry={() => { setError(null); setIsConnecting(true); setRetryKey(k => k + 1); }} />
               </div>
             )}
-            <button
-              onClick={onEnd}
-              className="mt-4 bg-red-950/40 hover:bg-red-900/40 text-red-200 border border-red-900/30 px-5 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer"
-            >
-              Volver al historial
-            </button>
+            <div className="flex items-center justify-center gap-3 mt-4">
+              <button
+                onClick={() => { setError(null); setIsConnecting(true); setRetryKey(k => k + 1); }}
+                className="bg-accent-systematic hover:bg-white text-black px-4 py-2 rounded-xl font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Reintentar Conexión
+              </button>
+              <button
+                onClick={handleEndSession}
+                className="bg-red-950/40 hover:bg-red-900/40 text-red-200 border border-red-900/30 px-5 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer"
+              >
+                Volver al historial
+              </button>
+            </div>
           </div>
         ) : localSession.isCompleted ? (
           /* Report Screen */
@@ -998,7 +1155,7 @@ export function OralEvaluatorSession({
             </p>
 
             <button
-              onClick={onEnd}
+              onClick={handleEndSession}
               className="bg-accent-systematic hover:bg-white text-black font-mono text-xs uppercase tracking-widest py-4 px-10 border border-none transition-all font-bold cursor-pointer"
             >
               Finalizar y Guardar Reporte
@@ -1007,55 +1164,207 @@ export function OralEvaluatorSession({
         ) : (
           /* Running Session Screen */
           <div className="flex flex-col items-center w-full">
-            <div className="relative w-44 h-44 mb-6 flex items-center justify-center">
-              {/* Pulsing rings */}
-              <div className={cn(
-                "absolute inset-0 rounded-full bg-accent-systematic/10 transition-all duration-500",
-                isConnecting ? "animate-ping" : isSpeaking ? "animate-pulse scale-150 opacity-20" : "scale-110"
-              )} />
-              <div className={cn(
-                "absolute inset-4 rounded-full bg-accent-systematic/15 transition-all duration-300",
-                isSpeaking ? "animate-pulse scale-125 opacity-35" : "scale-100"
-              )} />
+            <div className="relative w-48 h-48 mb-6 flex items-center justify-center">
+              {/* Dynamic volume / speaking ripples */}
+              <div 
+                className={cn(
+                  "absolute rounded-full transition-all duration-300",
+                  isConnecting 
+                    ? "inset-0 bg-accent-systematic/10 animate-ping" 
+                    : isSpeaking 
+                      ? "inset-0 bg-amber-500/20 animate-pulse scale-150" 
+                      : isUserSpeaking 
+                        ? "inset-0 bg-emerald-500/25 animate-pulse" 
+                        : "inset-2 bg-white/5"
+                )}
+                style={{
+                  transform: !isConnecting && isUserSpeaking ? `scale(${1.1 + userVolume * 0.9})` : undefined
+                }}
+              />
+              <div 
+                className={cn(
+                  "absolute inset-3 rounded-full transition-all duration-200",
+                  isSpeaking ? "bg-amber-500/25 scale-125" : isUserSpeaking ? "bg-emerald-500/35 scale-115" : "bg-white/5"
+                )}
+              />
               
-              {/* Orb */}
-              <div className={cn(
-                "relative z-10 w-24 h-24 rounded-full flex items-center justify-center shadow-lg transition-all duration-500 border border-white/10",
-                isConnecting ? "bg-bg-systematic text-ink-muted" : "bg-accent-systematic text-black shadow-[4px_4px_0px_#000000]"
-              )}>
+              {/* Central Voice Orb */}
+              <div 
+                className={cn(
+                  "relative z-10 w-28 h-28 rounded-full flex flex-col items-center justify-center shadow-lg transition-all duration-300 border",
+                  isConnecting 
+                    ? "bg-bg-systematic text-ink-muted border-white/10" 
+                    : isSpeaking 
+                      ? "bg-gradient-to-tr from-amber-600 to-orange-500 text-black border-amber-300 shadow-[0_0_30px_rgba(245,158,11,0.4)] scale-105" 
+                      : isUserSpeaking 
+                        ? "bg-gradient-to-tr from-emerald-600 to-emerald-400 text-black border-emerald-300 shadow-[0_0_35px_rgba(16,185,129,0.5)]" 
+                        : "bg-panel-systematic text-accent-systematic border-accent-systematic/40 shadow-[4px_4px_0px_#000000]"
+                )}
+                style={{
+                  transform: isUserSpeaking ? `scale(${1 + Math.min(0.25, userVolume * 0.4)})` : undefined
+                }}
+              >
                 {isConnecting ? (
-                  <Loader2 className="w-8 h-8 animate-spin" />
+                  <Loader2 className="w-8 h-8 animate-spin text-ink-muted" />
                 ) : isSpeaking ? (
-                  <Volume2 className="w-8 h-8 text-black animate-bounce" />
+                  <>
+                    <Volume2 className="w-8 h-8 text-black animate-bounce" />
+                    <span className="text-[9px] font-mono font-black uppercase text-black mt-1">Evaluando</span>
+                  </>
+                ) : isUserSpeaking ? (
+                  <>
+                    <Mic className="w-8 h-8 text-black animate-pulse" />
+                    <span className="text-[9px] font-mono font-black uppercase text-black mt-1">Te escucho</span>
+                  </>
                 ) : (
-                  <Mic className="w-8 h-8 text-black" />
+                  <>
+                    <Mic className="w-8 h-8 text-accent-systematic" />
+                    <span className="text-[9px] font-mono font-bold uppercase text-ink-muted mt-1">Listo</span>
+                  </>
                 )}
               </div>
             </div>
 
-            {/* Speaking/Listening Voice wave effect */}
+            {/* Real-time 9-bar reactive audio equalizer */}
             {!isConnecting && (
-              <div className="flex items-end justify-center gap-1.5 h-8 mb-6">
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-1 h-6" : "h-2")} />
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-2 h-8" : "h-3")} />
-                <div className={cn("w-1 bg-accent-systematic/80 rounded-full transition-all duration-300", isSpeaking ? "animate-wave-3 h-5" : "h-2.5")} />
-                <div className={cn("w-1 bg-accent-systematic rounded-full transition-all duration-300", isSpeaking ? "animate-wave-4 h-7" : "h-3")} />
-                <div className={cn("w-1 bg-accent-systematic/60 rounded-full transition-all duration-300", isSpeaking ? "animate-wave-5 h-4" : "h-1.5")} />
+              <div className="flex items-end justify-center gap-1.5 h-10 mb-4 bg-bg-systematic/60 px-4 py-1.5 rounded-full border border-white/5">
+                {[0.4, 0.7, 1.0, 0.8, 1.2, 0.8, 1.0, 0.7, 0.4].map((multiplier, i) => {
+                  const barHeight = isSpeaking 
+                    ? Math.max(6, Math.min(28, 12 + Math.sin(Date.now() / 150 + i) * 10))
+                    : isUserSpeaking 
+                      ? Math.max(6, Math.min(32, 6 + userVolume * 50 * multiplier))
+                      : 4;
+                  return (
+                    <div 
+                      key={i}
+                      className={cn(
+                        "w-1.5 rounded-full transition-all duration-75",
+                        isSpeaking 
+                          ? "bg-amber-400" 
+                          : isUserSpeaking 
+                            ? "bg-emerald-400" 
+                            : "bg-white/20"
+                      )}
+                      style={{ height: `${barHeight}px` }}
+                    />
+                  );
+                })}
               </div>
             )}
 
             <div className="text-center mb-4 min-h-[60px] flex flex-col justify-center">
-              <h3 className="text-xl font-black uppercase tracking-tight text-ink mb-1">
-                {isConnecting ? "Sincronizando..." : isSpeaking ? "El Evaluador está hablando" : "Evaluador Escuchando..."}
+              <h3 className="text-xl font-black uppercase tracking-tight text-ink mb-1 flex items-center justify-center gap-2">
+                {isConnecting ? (
+                  "Sincronizando evaluador..."
+                ) : isSpeaking ? (
+                  <span className="text-amber-400 flex items-center gap-1.5">
+                    <Volume2 className="w-5 h-5 animate-bounce" /> El Evaluador está hablando
+                  </span>
+                ) : isEvaluatingTurn ? (
+                  <span className="text-accent-systematic flex items-center gap-1.5 animate-pulse">
+                    <Loader2 className="w-5 h-5 animate-spin" /> Procesando tu calificación...
+                  </span>
+                ) : isUserSpeaking ? (
+                  <span className="text-emerald-400 flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                    ¡Detectando tu voz! Te estoy escuchando...
+                  </span>
+                ) : (
+                  "Evaluador esperando tu respuesta..."
+                )}
               </h3>
               <p className="text-ink-muted text-xs px-4 font-sans max-w-sm mx-auto leading-relaxed">
                 {isConnecting 
                   ? "Conectando al canal de voz de nivel académico..." 
                   : isSpeaking 
-                    ? "Escucha la pregunta o retroalimentación con atención." 
-                    : "Responde oralmente la pregunta en voz alta. Sé claro e hila ideas."}
+                    ? "Escucha la formulación o retroalimentación con atención." 
+                    : isEvaluatingTurn
+                      ? "El evaluador está analizando tu respuesta para asignar el puntaje y feedback."
+                      : isUserSpeaking
+                        ? "Explica tu respuesta en voz alta. Al terminar haz una pausa o presiona el botón inferior para evaluar."
+                        : "Habla ante el micrófono para responder o presiona el botón 'Evaluar respuesta'."}
               </p>
             </div>
+
+            {/* Primary Action Button: Finish Answer & Evaluate Immediately */}
+            {!isConnecting && !isSpeaking && (
+              <button
+                type="button"
+                onClick={handleFinishAnswer}
+                disabled={isEvaluatingTurn}
+                className={cn(
+                  "w-full max-w-sm mx-auto mb-4 py-3.5 px-6 rounded-xl font-bold font-mono text-xs uppercase tracking-wider flex items-center justify-center gap-2.5 transition-all shadow-lg cursor-pointer disabled:opacity-50",
+                  isEvaluatingTurn
+                    ? "bg-bg-systematic text-ink-muted border border-white/20"
+                    : isUserSpeaking
+                      ? "bg-emerald-500 hover:bg-emerald-400 text-black border-2 border-emerald-300 shadow-[0_0_30px_rgba(16,185,129,0.45)] animate-pulse"
+                      : "bg-accent-systematic hover:bg-white text-black border-2 border-accent-systematic shadow-[0_0_20px_rgba(255,77,0,0.25)]"
+                )}
+              >
+                {isEvaluatingTurn ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" /> Evaluando respuesta...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" /> Terminé mi respuesta (Evaluar ahora)
+                  </>
+                )}
+              </button>
+            )}
+
+            {/* Quick action buttons: Repeat question & Text input fallback */}
+            <div className="flex items-center justify-center gap-2 mb-4 w-full">
+              <button
+                type="button"
+                onClick={handleRepeatQuestion}
+                disabled={isConnecting}
+                className="inline-flex items-center gap-1.5 bg-bg-systematic hover:bg-white/10 text-ink-muted hover:text-white border border-white/10 px-3.5 py-1.5 rounded-lg text-xs font-mono uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50"
+              >
+                <Volume2 className="w-3.5 h-3.5 text-accent-systematic" /> Repetir Pregunta
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTextInput(v => !v)}
+                className="inline-flex items-center gap-1.5 bg-bg-systematic hover:bg-white/10 text-ink-muted hover:text-white border border-white/10 px-3.5 py-1.5 rounded-lg text-xs font-mono uppercase tracking-wider transition-all cursor-pointer"
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-amber-400" />
+                {showTextInput ? "Ocultar texto" : "Escribir respuesta"}
+              </button>
+            </div>
+
+            {/* Optional text answer input */}
+            <AnimatePresence>
+              {showTextInput && (
+                <motion.form
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  onSubmit={handleSendManualAnswer}
+                  className="w-full bg-bg-systematic/80 border border-white/10 p-3 rounded-xl mb-4 space-y-2"
+                >
+                  <label className="block text-[10px] font-mono uppercase text-ink-muted font-bold">
+                    Respuesta alternativa por texto (en caso de ruido ambiental):
+                  </label>
+                  <div className="flex gap-2">
+                    <textarea
+                      value={manualTextAnswer}
+                      onChange={(e) => setManualTextAnswer(e.target.value)}
+                      placeholder="Escribe tu respuesta a la pregunta aquí..."
+                      rows={2}
+                      className="flex-1 bg-black/40 border border-white/10 rounded-lg p-2 text-xs text-white placeholder:text-ink-muted/50 focus:outline-none focus:border-accent-systematic resize-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!manualTextAnswer.trim() || isSendingManual}
+                      className="bg-accent-systematic hover:bg-white text-black px-4 rounded-lg font-bold text-xs uppercase tracking-wider flex items-center justify-center transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
+                  </div>
+                </motion.form>
+              )}
+            </AnimatePresence>
 
             {/* Display of current main idea / key word in written text */}
             <AnimatePresence mode="wait">
@@ -1142,7 +1451,7 @@ export function OralEvaluatorSession({
             </div>
 
             <button
-              onClick={onEnd}
+              onClick={handleEndSession}
               className="bg-bg-systematic border border-white/10 hover:border-red-500/40 hover:text-red-400 text-ink font-mono text-[9px] uppercase tracking-widest py-3 px-8 transition-all duration-200 cursor-pointer"
             >
               Salir del Examen
