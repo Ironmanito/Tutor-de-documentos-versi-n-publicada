@@ -15,7 +15,7 @@ import { GoldenRatioWatermark } from './components/GoldenRatioWatermark';
 import { FeedbackModal } from './components/FeedbackModal';
 import { AdminPanel } from './components/AdminPanel';
 import { UploadProgressAnimation, FileProgressItem } from './components/UploadProgressAnimation';
-import { trackUserActivity, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
+import { trackUserActivity, trackUserAction, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
 import { DocumentViewer } from './components/DocumentViewer';
 import { ConsentModal } from './components/ConsentModal';
 
@@ -1299,18 +1299,29 @@ export default function App() {
     }
 
     const validFiles = newFiles.filter(f => {
-      const lower = f.name.toLowerCase();
+      const lower = (f.name || '').toLowerCase().trim();
+      const type = (f.type || '').toLowerCase().trim();
+
+      // Debug log in browser console for troubleshooting file uploads
+      console.log(`[File Upload Check] Name: "${f.name}", MIME Type: "${f.type}", Size: ${f.size} bytes`);
+
       return (
-        f.type === 'application/pdf' || 
-        f.type.startsWith('text/') || 
-        f.type.startsWith('image/') ||
-        f.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        f.type === 'application/msword' ||
-        f.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-        f.type === 'application/vnd.ms-powerpoint' ||
+        type === 'application/pdf' || 
+        type.includes('pdf') ||
+        type.startsWith('text/') || 
+        type.startsWith('image/') ||
+        type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        type === 'application/msword' ||
+        type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+        type === 'application/vnd.ms-powerpoint' ||
+        type === 'application/vnd.oasis.opendocument.text' ||
+        type === 'application/rtf' ||
+        type === 'text/rtf' ||
         lower.endsWith('.pdf') || 
         lower.endsWith('.docx') || 
         lower.endsWith('.doc') || 
+        lower.endsWith('.odt') ||
+        lower.endsWith('.rtf') ||
         lower.endsWith('.pptx') || 
         lower.endsWith('.ppt') || 
         lower.endsWith('.png') || 
@@ -1324,13 +1335,28 @@ export default function App() {
         lower.endsWith('.md') || 
         lower.endsWith('.txt') || 
         lower.endsWith('.csv') || 
-        lower.endsWith('.gdoc')
+        lower.endsWith('.gdoc') ||
+        // Si el MIME type es octet-stream o desconocido, pero el archivo no tiene extensión o parece un documento
+        (type === 'application/octet-stream' && !lower.includes('.'))
       );
     });
 
     if (validFiles.length === 0) {
       if (newFiles.length > 0) {
-        showToast('error', 'Formato no soportado', `No se pudo procesar "${newFiles[0].name}". Formatos permitidos: PDF (digital o escaneado), Presentaciones PowerPoint (.pptx), Imágenes/Fotos (.jpg, .png), Word (.docx) o Texto.`);
+        const rejected = newFiles[0];
+        const extMatch = rejected.name.includes('.') ? rejected.name.slice(rejected.name.lastIndexOf('.')) : '(sin extensión)';
+        console.warn(`[File Upload Rejected] Archivo rechazado en validación: "${rejected.name}", MIME: "${rejected.type}", Tamaño: ${rejected.size}`);
+        
+        // Report event to backend telemetry for immediate dev diagnostics
+        try {
+          trackUserAction('file_upload_rejected', `Nombre: ${rejected.name} | MIME: ${rejected.type || 'vacío'} | Ext: ${extMatch} | Bytes: ${rejected.size}`);
+        } catch (_) {}
+
+        showToast(
+          'error', 
+          'Formato no soportado', 
+          `No se pudo procesar "${rejected.name}" (${extMatch}, tipo: ${rejected.type || 'no especificado'}). Formatos permitidos: PDF (digital o escaneado), Presentaciones PowerPoint (.pptx), Imágenes/Fotos (.jpg, .png), Word (.docx) o Texto.`
+        );
       } else {
         showToast('warning', 'Sin archivos válidos', 'Por favor, selecciona archivos válidos (PDF, PowerPoint, Fotos/Imágenes, Word o Texto).');
       }
@@ -1443,9 +1469,9 @@ export default function App() {
 
           if (abortController.signal.aborted) break;
 
-          const substantive = text.replace(/--\s*\d+\s+of\s+\d+\s*--/gi, '').replace(/[\s\r\n\t]+/g, ' ').trim();
+          const substantive = text.replace(/--\s*\d+\s+of\s+\d+\s*--/gi, '').replace(/---\s*PÁGINA\s+\d+\s*---/gi, '').replace(/[\s\r\n\t]+/g, ' ').trim();
           if (!text || substantive.length === 0) {
-            throw new Error(`El archivo "${file.name}" no contiene texto extraíble. Puede ser un PDF escaneado (fotocopia) sin capa OCR.`);
+            throw new Error(`El archivo "${file.name}" no contiene texto legible ni extraíble. Si es una fotocopia escaneada, asegúrate de que sea nítida.`);
           }
 
           newFileTexts[file.name] = text;
@@ -1487,6 +1513,10 @@ export default function App() {
           }
           console.error(`Error extracting file ${file.name}:`, fileError);
           failedExtractions.push({ name: file.name, error: fileError.message || String(fileError) });
+          
+          try {
+            trackUserAction('file_extraction_error', `Archivo: ${file.name} | Error: ${fileError.message || String(fileError)} | Bytes: ${file.size}`);
+          } catch (_) {}
           
           setFilesProgress(prev => {
             const next = [...prev];

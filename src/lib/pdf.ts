@@ -13,7 +13,10 @@ async function tryBrowserPdfExtraction(
   onProgress?: ProgressCallback
 ): Promise<string | null> {
   try {
-    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const lowerName = file.name.toLowerCase();
+    const isPDF = file.type === 'application/pdf' || 
+                  (Boolean(file.type) && file.type.includes('pdf')) || 
+                  lowerName.endsWith('.pdf');
     if (!isPDF) return null;
 
     if (signal?.aborted) return null;
@@ -23,41 +26,62 @@ async function tryBrowserPdfExtraction(
     if (signal?.aborted) return null;
 
     const pdfjs = await import('pdfjs-dist');
-    if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
-    }
-    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) });
+    // Ensure workerSrc is set safely
+    try {
+      if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+        pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version || '3.11.174'}/pdf.worker.min.js`;
+      }
+    } catch (_) {}
+
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(arrayBuffer),
+      stopAtErrors: false,
+      useSystemFonts: true,
+      isEvalSupported: false,
+    });
     const pdf = await loadingTask.promise;
     if (signal?.aborted) return null;
 
-    onProgress?.(10, `Documento reconocido: ${pdf.numPages} páginas. Extrayendo...`);
+    const totalPages = pdf.numPages || 1;
+    onProgress?.(10, `Documento reconocido: ${totalPages} páginas. Extrayendo...`);
 
     let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
+    let extractedPagesCount = 0;
+
+    for (let i = 1; i <= totalPages; i++) {
       if (signal?.aborted) return null;
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item: any) => item.str || '')
-        .join(' ');
-      fullText += `--- PÁGINA ${i} ---\n${pageText}\n\n`;
+      try {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = (textContent.items || [])
+          .map((item: any) => item.str || '')
+          .join(' ');
+        
+        if (pageText.trim()) {
+          fullText += `--- PÁGINA ${i} ---\n${pageText}\n\n`;
+          extractedPagesCount++;
+        }
+      } catch (pageErr) {
+        console.warn(`[Browser PDF Extraction] No se pudo leer la página ${i}, continuando con el resto:`, pageErr);
+      }
 
       if (onProgress) {
-        const pagePct = 10 + Math.round((i / pdf.numPages) * 85);
-        onProgress(pagePct, `Procesando página ${i} de ${pdf.numPages}...`);
+        const pagePct = 10 + Math.round((i / totalPages) * 85);
+        onProgress(pagePct, `Procesando página ${i} de ${totalPages}...`);
       }
     }
+
     const substantive = fullText.replace(/---\s*PÁGINA\s+\d+\s*---/gi, '').replace(/[\s\r\n\t]+/g, ' ').trim();
-    if (substantive.length >= 80) {
-      console.log(`[Browser PDF Extraction] Extraído con éxito en el navegador para "${file.name}": ${substantive.length} caracteres.`);
-      onProgress?.(100, `¡Completado! (${pdf.numPages} páginas extraídas)`);
+    if (substantive.length >= 40) {
+      console.log(`[Browser PDF Extraction] Extraído con éxito en el navegador para "${file.name}": ${substantive.length} caracteres en ${extractedPagesCount} páginas.`);
+      onProgress?.(100, `¡Completado! (${extractedPagesCount || totalPages} páginas leídas)`);
       return fullText.trim();
     }
-    console.log(`[Browser PDF Extraction] El PDF "${file.name}" tiene poco texto digital (${substantive.length} chars), enviando al servidor para OCR...`);
-    onProgress?.(20, 'Texto escaneado detectado. Preparando OCR en servidor...');
+    console.log(`[Browser PDF Extraction] El PDF "${file.name}" tiene poco texto digital extraíble (${substantive.length} chars). Enviando al servidor para escaneo inteligente con IA...`);
+    onProgress?.(20, 'Texto escaneado o complejo detectado. Activando OCR inteligente...');
     return null;
   } catch (err) {
-    console.warn("[Browser PDF Extraction] No se pudo extraer en navegador, recurriendo a extracción en servidor:", err);
+    console.warn("[Browser PDF Extraction] Error en extracción directa del navegador, derivando al servidor con IA:", err);
     return null;
   }
 }
@@ -337,11 +361,15 @@ export async function extractTextFromFile(
     }
   }
 
-  const isPDF = file.type === 'application/pdf' || fileNameLower.endsWith('.pdf');
+  const isPDF = file.type === 'application/pdf' || 
+                (Boolean(file.type) && file.type.includes('pdf')) || 
+                fileNameLower.endsWith('.pdf');
   const isWord = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
                   file.type === 'application/msword' ||
-                  fileNameLower.endsWith('.docx') ||
-                  fileNameLower.endsWith('.doc');
+                  fileNameLower.endsWith('.docx') || 
+                  fileNameLower.endsWith('.doc') ||
+                  fileNameLower.endsWith('.odt') ||
+                  fileNameLower.endsWith('.rtf');
   const isPresentation = file.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
                          file.type === 'application/vnd.ms-powerpoint' ||
                          fileNameLower.endsWith('.pptx') ||
@@ -351,12 +379,13 @@ export async function extractTextFromFile(
 
   if (isPDF || isWord || isPresentation || isImage) {
     return await extractTextFromPDF(file, signal, onProgress);
-  } else if (file.type.startsWith('text/') || fileNameLower.endsWith('.md') || fileNameLower.endsWith('.txt') || fileNameLower.endsWith('.csv') || fileNameLower.endsWith('.gdoc')) {
+  } else if (file.type.startsWith('text/') || fileNameLower.endsWith('.md') || fileNameLower.endsWith('.txt') || fileNameLower.endsWith('.csv') || fileNameLower.endsWith('.gdoc') || !fileNameLower.includes('.')) {
     onProgress?.(50, 'Leyendo texto del archivo plano...');
     const content = await file.text();
     onProgress?.(100, '¡Texto leído con éxito!');
     return content;
   } else {
-    throw new Error(`Tipo de archivo no soportado: ${file.name}`);
+    // Fallback: tratar de extraer con backend de todas maneras en lugar de arrojar error
+    return await extractTextFromPDF(file, signal, onProgress);
   }
 }

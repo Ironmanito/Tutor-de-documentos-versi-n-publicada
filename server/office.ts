@@ -205,7 +205,7 @@ export async function extractTextFromPPT(buffer: Buffer): Promise<string> {
   return `--- PRESENTACIÓN POWERPOINT (FORMATO .PPT) ---\n\n${extracted}`;
 }
 
-const OCR_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+const OCR_MODELS = ['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
 
 /**
  * Executes a Gemini call with automated retry for transient errors (e.g. 503 UNAVAILABLE / high demand spikes).
