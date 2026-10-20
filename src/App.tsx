@@ -355,6 +355,72 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
+  // Estados y función para Generación de Mapa Conceptual en Segundo Plano
+  const [cachedDiagram, setCachedDiagram] = useState<any>(null);
+  const [isGeneratingDiagram, setIsGeneratingDiagram] = useState<boolean>(false);
+  const [showDiagramReadyBanner, setShowDiagramReadyBanner] = useState<boolean>(false);
+
+  // Limpiar caché de mapa si cambia el texto o apunte activo
+  useEffect(() => {
+    setCachedDiagram(null);
+    setIsGeneratingDiagram(false);
+    setShowDiagramReadyBanner(false);
+  }, [studyText, activeStudyTitle]);
+
+  const handleTriggerDiagram = useCallback((targetDiff: 'facil' | 'medio' | 'dificil' = gameDifficulty, forceRegen = false) => {
+    if (cachedDiagram && !forceRegen) {
+      setViewMode('diagram');
+      setShowDiagramReadyBanner(false);
+      return;
+    }
+
+    if (isGeneratingDiagram) {
+      showToast('info', 'Generación en Curso', 'El mapa conceptual se está estructurando en segundo plano. Te avisaremos en cuanto esté listo.');
+      return;
+    }
+
+    const effectiveText = studyText || Object.values(fileTexts).join('\n\n');
+    if (!effectiveText.trim()) {
+      showToast('error', 'Sin Contenido', 'Carga un documento o selecciona un apunte para crear el mapa.');
+      return;
+    }
+
+    setIsGeneratingDiagram(true);
+    setShowDiagramReadyBanner(false);
+
+    // Derivar de inmediato al usuario al Lector de Apuntes para que no se quede esperando
+    if (viewMode === 'diagram') {
+      setViewMode('setup');
+    }
+    handleOpenDocumentViewer();
+    showToast('info', '🗺️ Generando Mapa en 2do Plano', 'Puedes leer tus apuntes con tranquilidad. Te avisaremos con sonido y notificación en cuanto termine.');
+
+    fetch('/api/generate-diagram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studyText: effectiveText,
+        title: activeStudyTitle || (files[0]?.name?.replace(/\.[^/.]+$/, '')) || 'Cuaderno de Estudio',
+        difficulty: targetDiff
+      })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.diagram) {
+          setCachedDiagram(data.diagram);
+          setIsGeneratingDiagram(false);
+          setShowDiagramReadyBanner(true);
+          owlAudio.playLevelUpChime();
+        } else {
+          setIsGeneratingDiagram(false);
+        }
+      })
+      .catch(err => {
+        console.warn("Error en generación background de diagrama:", err);
+        setIsGeneratingDiagram(false);
+      });
+  }, [cachedDiagram, isGeneratingDiagram, studyText, fileTexts, activeStudyTitle, files, gameDifficulty, viewMode, handleOpenDocumentViewer, showToast]);
+
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
@@ -2105,7 +2171,12 @@ export default function App() {
           <button
             disabled={files.length === 0 && !studyText}
             onClick={() => {
-              setViewMode('diagram');
+              if (cachedDiagram) {
+                setViewMode('diagram');
+                setShowDiagramReadyBanner(false);
+              } else {
+                handleTriggerDiagram(gameDifficulty);
+              }
               setShowMobileSidebar(false);
             }}
             className={cn(
@@ -2502,16 +2573,33 @@ export default function App() {
 
               {/* Botón Acceso Rápido al Mapa */}
               <button
-                onClick={() => setViewMode(viewMode === 'diagram' ? 'setup' : 'diagram')}
+                onClick={() => {
+                  if (viewMode === 'diagram') {
+                    setViewMode('setup');
+                  } else if (cachedDiagram) {
+                    setViewMode('diagram');
+                    setShowDiagramReadyBanner(false);
+                  } else {
+                    handleTriggerDiagram(gameDifficulty);
+                  }
+                }}
                 className={`pointer-events-auto px-3.5 py-2 border rounded-xl font-mono text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-2xl flex items-center gap-2 transition-all cursor-pointer ${
                   viewMode === 'diagram'
                     ? 'bg-amber-400 text-black border-amber-300 font-black'
-                    : 'bg-[#18181b]/90 hover:bg-amber-400/20 text-amber-300 border-amber-400/40'
+                    : isGeneratingDiagram
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-400 animate-pulse'
+                      : 'bg-[#18181b]/90 hover:bg-amber-400/20 text-amber-300 border-amber-400/40'
                 }`}
-                title="Abrir o cerrar el Mapa Conceptual Interactivo"
+                title="Abrir o generar el Mapa Conceptual"
               >
                 <span>🗺️</span>
-                <span>{viewMode === 'diagram' ? 'Cerrar Mapa' : 'Mapa Conceptual'}</span>
+                <span>
+                  {viewMode === 'diagram'
+                    ? 'Cerrar Mapa'
+                    : isGeneratingDiagram
+                      ? 'Generando en 2do Plano... ⏳'
+                      : 'Mapa Conceptual'}
+                </span>
               </button>
 
               <button
@@ -3000,18 +3088,28 @@ export default function App() {
                     {/* Method 5: Mapa Conceptual Visual & Desafíos Gamificados */}
                     <button
                       disabled={files.length === 0 && !studyText}
-                      onClick={() => setViewMode('diagram')}
+                      onClick={() => handleTriggerDiagram(gameDifficulty)}
                       className="w-full text-left py-6 border-b border-white/5 hover:border-amber-400/40 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-300 group text-ink bg-transparent cursor-pointer"
                     >
                       <span className="font-mono text-[9px] text-amber-400 uppercase tracking-widest block mb-1 font-bold flex items-center justify-between">
                         <span>05. Mapa Conceptual & Desafíos Gamificados</span>
-                        <span className="bg-amber-400 text-black px-1.5 py-0.5 rounded text-[8px] font-black">NUEVO</span>
+                        {isGeneratingDiagram ? (
+                          <span className="bg-amber-500/20 text-amber-300 border border-amber-400/40 px-2 py-0.5 rounded text-[8px] font-bold animate-pulse">
+                            GENERANDO EN 2DO PLANO ⏳
+                          </span>
+                        ) : cachedDiagram ? (
+                          <span className="bg-emerald-400 text-black px-1.5 py-0.5 rounded text-[8px] font-black">LISTO ✓</span>
+                        ) : (
+                          <span className="bg-amber-400 text-black px-1.5 py-0.5 rounded text-[8px] font-black">NUEVO</span>
+                        )}
                       </span>
                       <span className="font-display font-bold text-lg text-white group-hover:text-amber-300 transition-all block mb-1 uppercase flex items-center gap-2">
                         <span>🗺️ Mapa Conceptual y Active Recall</span>
                       </span>
                       <p className="text-ink-muted text-xs leading-relaxed">
-                        Explora nodos conceptuales con analogías prácticas, niveles Fácil/Medio/Difícil y preguntas de active recall con gemas.
+                        {isGeneratingDiagram
+                          ? "Generando estructura en segundo plano. Puedes seguir usando el tutor; te avisaremos al finalizar."
+                          : "Explora nodos conceptuales con analogías prácticas, niveles Fácil/Medio/Difícil y preguntas de active recall con gemas."}
                       </p>
                     </button>
                   </div>
@@ -3094,8 +3192,12 @@ export default function App() {
                 activeTitle={activeStudyTitle || (files[0]?.name?.replace(/\.[^/.]+$/, '')) || 'Cuaderno de Estudio'}
                 isGameMode={isGameMode}
                 initialDifficulty={gameDifficulty}
+                cachedDiagram={cachedDiagram}
+                isGenerating={isGeneratingDiagram}
                 onBack={() => setViewMode('setup')}
+                onGoToReader={() => handleOpenDocumentViewer()}
                 onAddGems={handleAddGems}
+                onDiagramGenerated={(diag) => setCachedDiagram(diag)}
               />
             </motion.div>
           )}
@@ -5247,6 +5349,49 @@ app.post('/api/create-checkout', async (req, res) => {
         gameDifficulty={gameDifficulty}
         onAddGems={handleAddGems}
       />
+
+      {/* BANNER FLOTANTE: MAPA CONCEPTUAL LISTO EN SEGUNDO PLANO */}
+      <AnimatePresence>
+        {showDiagramReadyBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -30, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -30, scale: 0.95 }}
+            className="fixed top-6 right-4 sm:right-8 z-50 max-w-sm sm:max-w-md p-4 rounded-2xl bg-[#12141a]/95 border-2 border-amber-400 shadow-2xl backdrop-blur-xl flex items-center gap-3.5"
+          >
+            <div className="w-10 h-10 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center text-xl shrink-0 border border-amber-400/40 animate-bounce">
+              🗺️
+            </div>
+            <div className="flex-grow">
+              <span className="font-mono text-[9px] uppercase tracking-wider text-amber-400 font-bold block">
+                ¡Mapa Conceptual Listo! 🎉
+              </span>
+              <p className="text-xs text-white font-medium line-clamp-1">
+                La estructura y retos activos fueron generados en 2do plano.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => {
+                  setShowDiagramReadyBanner(false);
+                  setShowDocumentViewer(false);
+                  setViewMode('diagram');
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-mono font-black text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
+              >
+                Ver Mapa ➔
+              </button>
+              <button
+                onClick={() => setShowDiagramReadyBanner(false)}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                title="Descartar aviso"
+              >
+                ✕
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* MODAL DE CONSENTIMIENTO Y TRANSPARENCIA TELEMÉTRICA / ACTIVACIÓN PRO */}
       <ConsentModal 

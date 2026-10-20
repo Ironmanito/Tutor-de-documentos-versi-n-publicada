@@ -52,8 +52,12 @@ interface InteractiveDiagramProps {
   activeTitle?: string;
   isGameMode?: boolean;
   initialDifficulty?: DifficultyLevel;
+  cachedDiagram?: DiagramData | null;
+  isGenerating?: boolean;
   onBack?: () => void;
+  onGoToReader?: () => void;
   onAddGems?: (amount: number) => void;
+  onDiagramGenerated?: (diagram: DiagramData, diff: DifficultyLevel) => void;
 }
 
 export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
@@ -61,12 +65,16 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
   activeTitle,
   isGameMode = true,
   initialDifficulty = 'medio',
+  cachedDiagram,
+  isGenerating = false,
   onBack,
-  onAddGems
+  onGoToReader,
+  onAddGems,
+  onDiagramGenerated
 }) => {
-  const [diagram, setDiagram] = useState<DiagramData | null>(null);
+  const [diagram, setDiagram] = useState<DiagramData | null>(cachedDiagram || null);
   const [difficulty, setDifficulty] = useState<DifficultyLevel>(initialDifficulty);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!cachedDiagram && isGenerating);
   const [selectedNode, setSelectedNode] = useState<DiagramNode | null>(null);
   const [zoom, setZoom] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -81,6 +89,14 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  // Sincronizar diagrama si cachedDiagram cambia
+  useEffect(() => {
+    if (cachedDiagram) {
+      setDiagram(cachedDiagram);
+      setIsLoading(false);
+    }
+  }, [cachedDiagram]);
+
   // Cargar o regenerar diagrama según dificultad
   const fetchDiagram = async (diffToUse: DifficultyLevel = difficulty) => {
     setIsLoading(true);
@@ -93,6 +109,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
       const data = await res.json();
       if (data.diagram) {
         setDiagram(data.diagram);
+        onDiagramGenerated?.(data.diagram, diffToUse);
         setOwlMood('happy');
         const diffLabels = { facil: 'Introductorio', medio: 'Universitario Estándar', dificil: 'Exigente / Examen' };
         setOwlSpeech(`Mapa conceptual generado (Nivel: ${diffLabels[diffToUse]}).`);
@@ -107,7 +124,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
   };
 
   useEffect(() => {
-    if (studyText) {
+    if (studyText && !cachedDiagram && !isGenerating) {
       fetchDiagram(difficulty);
     }
   }, [studyText, activeTitle]);
@@ -165,28 +182,41 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
     }
   };
 
-  if (isLoading) {
+  if (isLoading || isGenerating || !diagram) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[480px] p-8 text-center bg-zinc-950/40 border border-white/5 rounded-2xl">
-        <WiseOwlAvatar mood="thinking" size="lg" speechText="Extrayendo estructura lógica, variables y relaciones del apunte..." />
-        <div className="mt-6 flex items-center gap-3 text-amber-300 font-mono text-xs uppercase tracking-wider">
+      <div className="flex flex-col items-center justify-center min-h-[480px] p-8 text-center bg-zinc-950/40 border border-white/5 rounded-2xl space-y-6">
+        <WiseOwlAvatar mood="thinking" size="lg" speechText="Estructurando mapa conceptual en segundo plano... Puedes continuar leyendo tus apuntes o explorando mientras finaliza." />
+        <div className="flex items-center gap-3 text-amber-300 font-mono text-xs uppercase tracking-wider">
           <RefreshCw className="w-4 h-4 animate-spin" />
-          <span>Estructurando mapa conceptual ({difficulty.toUpperCase()})...</span>
+          <span>Generando en segundo plano ({difficulty.toUpperCase()})...</span>
         </div>
-      </div>
-    );
-  }
-
-  if (!diagram) {
-    return (
-      <div className="p-8 text-center bg-zinc-950/40 border border-white/5 rounded-2xl">
-        <WiseOwlAvatar mood="thinking" speechText="No se pudo estructurar el mapa con este texto. Intentemos regenerarlo." />
-        <button
-          onClick={() => fetchDiagram(difficulty)}
-          className="mt-4 px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
-        >
-          Reintentar Estructuración
-        </button>
+        <div className="flex items-center gap-3 pt-2 flex-wrap justify-center">
+          {onGoToReader && (
+            <button
+              onClick={onGoToReader}
+              className="px-5 py-2.5 bg-accent-systematic hover:bg-white text-black font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer flex items-center gap-2"
+            >
+              <BookOpen className="w-4 h-4" />
+              <span>📖 Ir al Lector de Apuntes</span>
+            </button>
+          )}
+          {onBack && (
+            <button
+              onClick={onBack}
+              className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+            >
+              Volver al Inicio
+            </button>
+          )}
+          {!isGenerating && !isLoading && !diagram && (
+            <button
+              onClick={() => fetchDiagram(difficulty)}
+              className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-black font-mono font-black text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+            >
+              Reintentar Estructuración 🔄
+            </button>
+          )}
+        </div>
       </div>
     );
   }

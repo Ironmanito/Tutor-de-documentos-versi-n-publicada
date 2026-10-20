@@ -2328,14 +2328,14 @@ app.post("/api/generate-diagram", async (req, res) => {
 
   try {
     const ai = getAiClient(customKey);
-    const response = await generateContentWithFallback(ai, {
+    const diagramGenPromise = generateContentWithFallback(ai, {
       contents: `Transforma el contenido académico de este documento en un MAPA CONCEPTUAL VISUAL INTERACTIVO Y GAMIFICADO de alto impacto para estudiantes y universitarios.
 
 ${diffPromptDirectives}
 
 REGLAS ESTRUCTURALES:
 1. Crea un nodo central que sintetice el núcleo temático del texto.
-2. Identifica entre 4 y 7 nodos secundarios conectados (conceptos clave, procesos, causas/efectos o aplicaciones prácticas).
+2. Identifica entre 4 y 6 nodos secundarios conectados (conceptos clave, procesos, causas/efectos o aplicaciones prácticas).
 3. Cada nodo debe incluir:
    - "label": Título sintético y memorable (2 a 4 palabras).
    - "emoji": Emoji representativo de la disciplina (ej. ⚡, 🧬, 🏛️, 🧠, ⚖️, 🔬, 📊, 🌿).
@@ -2349,7 +2349,7 @@ REGLAS ESTRUCTURALES:
 
 Título del cuaderno: ${title || 'Apunte de Estudio'}
 Texto:
-${cleanText.substring(0, 45000)}`,
+${cleanText.substring(0, 10000)}`,
       config: {
         systemInstruction: "Eres un docente universitario y pedagogo experto en mapas conceptuales y active recall gamificado. Genera diagramas precisos, estimulantes y conceptualmente impecables.",
         responseMimeType: 'application/json',
@@ -2411,7 +2411,14 @@ ${cleanText.substring(0, 45000)}`,
           required: ['centralTopic', 'nodes', 'connections']
         }
       }
-    });
+    }, ['gemini-2.5-flash', 'gemini-flash-latest']);
+
+    // Timeout de 8.5 segundos para garantizar respuesta rápida y evitar cuelgues
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout en IA de diagrama (8.5s)")), 8500)
+    );
+
+    const response: any = await Promise.race([diagramGenPromise, timeoutPromise]);
 
     const cleanResult = cleanJsonText(response.text || '');
     return res.json({ diagram: JSON.parse(cleanResult), difficulty: diffLevel });
