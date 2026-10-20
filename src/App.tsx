@@ -5243,6 +5243,9 @@ app.post('/api/create-checkout', async (req, res) => {
               : []
         }
         initialActiveFileName={viewerActiveFileName}
+        isGameMode={isGameMode}
+        gameDifficulty={gameDifficulty}
+        onAddGems={handleAddGems}
       />
 
       {/* MODAL DE CONSENTIMIENTO Y TRANSPARENCIA TELEMÉTRICA / ACTIVACIÓN PRO */}
