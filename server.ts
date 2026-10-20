@@ -983,19 +983,22 @@ const sessionEmailDispatchHistory = new Map<string, { lastSignature: string; las
 
 function getEmailConfigurationStatus() {
   const hasResend = !!process.env.RESEND_API_KEY;
-  const smtpHost = process.env.SMTP_HOST || (process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
-  const smtpUser = process.env.SMTP_USER || process.env.GMAIL_USER;
-  const smtpPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASS;
+  const smtpUser = (process.env.SMTP_USER || process.env.GMAIL_USER || process.env.GMAIL_EMAIL || '').trim();
+  const rawPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD || process.env.GMAIL_PASS || process.env.APP_PASSWORD || '';
+  const smtpPass = rawPass.replace(/\s+/g, '');
+  const smtpHost = process.env.SMTP_HOST || (smtpUser.includes('@gmail') || process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
   const hasSmtp = !!(smtpHost && smtpUser && smtpPass);
   const hasWeb3Forms = !!process.env.WEB3FORMS_ACCESS_KEY;
 
   return {
     adminEmail: ADMIN_NOTIFICATION_EMAIL,
     isConfigured: hasResend || hasSmtp || hasWeb3Forms,
-    activeProvider: hasResend ? 'Resend API' : hasSmtp ? `SMTP (${smtpHost})` : hasWeb3Forms ? 'Web3Forms' : 'FormSubmit / Log Local (Configurar GMAIL_APP_PASSWORD o RESEND_API_KEY en Render)',
+    activeProvider: hasResend ? 'Resend API' : hasSmtp ? `Gmail SMTP (${smtpUser})` : hasWeb3Forms ? 'Web3Forms' : 'Sin proveedor directo configurado',
     hasResend,
     hasSmtp,
-    hasWeb3Forms
+    hasWeb3Forms,
+    smtpUserConfigured: !!smtpUser,
+    smtpPassConfigured: !!smtpPass
   };
 }
 
@@ -1007,6 +1010,7 @@ async function sendAdminNotificationEmail(params: {
 }): Promise<{ sent: boolean; provider: string; error?: string }> {
   const to = ADMIN_NOTIFICATION_EMAIL;
   const { subject, html, text, replyTo } = params;
+  let lastError: string | undefined;
 
   // 1. Resend API
   if (process.env.RESEND_API_KEY) {
@@ -1035,27 +1039,43 @@ async function sendAdminNotificationEmail(params: {
       }
       const errData = await res.json().catch(() => ({}));
       console.warn("[Admin Email] Resend API error:", errData);
+      lastError = `Resend API: ${JSON.stringify(errData)}`;
     } catch (e: any) {
       console.warn("[Admin Email] Resend request failed:", e.message || e);
+      lastError = `Resend: ${e.message || e}`;
     }
   }
 
-  // 2. SMTP (Gmail / Brevo / Custom SMTP)
-  const smtpHost = process.env.SMTP_HOST || (process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
-  const smtpUser = process.env.SMTP_USER || process.env.GMAIL_USER;
-  const smtpPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASS;
+  // 2. SMTP (Gmail / Custom SMTP)
+  const smtpUser = (process.env.SMTP_USER || process.env.GMAIL_USER || process.env.GMAIL_EMAIL || '').trim();
+  const rawPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD || process.env.GMAIL_PASS || process.env.APP_PASSWORD || '';
+  const cleanPass = rawPass.replace(/\s+/g, '');
+  const smtpHost = process.env.SMTP_HOST || (smtpUser.includes('@gmail') || process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
 
-  if (smtpHost && smtpUser && smtpPass) {
+  if (smtpHost && smtpUser && cleanPass) {
     try {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: parseInt(process.env.SMTP_PORT || "465", 10),
-        secure: (process.env.SMTP_SECURE === "true" || !process.env.SMTP_PORT || process.env.SMTP_PORT === "465"),
-        auth: {
-          user: smtpUser,
-          pass: smtpPass
-        }
-      });
+      const nodemailer = await import("nodemailer");
+      const isGmail = smtpHost.includes("gmail") || smtpUser.includes("@gmail.com");
+      
+      const transportConfig: any = isGmail
+        ? {
+            service: "gmail",
+            auth: {
+              user: smtpUser,
+              pass: cleanPass
+            }
+          }
+        : {
+            host: smtpHost,
+            port: parseInt(process.env.SMTP_PORT || "587", 10),
+            secure: process.env.SMTP_SECURE === "true" || process.env.SMTP_PORT === "465",
+            auth: {
+              user: smtpUser,
+              pass: cleanPass
+            }
+          };
+
+      const transporter = nodemailer.createTransport(transportConfig);
 
       await transporter.sendMail({
         from: process.env.EMAIL_FROM || `"Tutor de Cuaderno AI" <${smtpUser}>`,
@@ -1066,10 +1086,15 @@ async function sendAdminNotificationEmail(params: {
         html
       });
 
-      console.log(`[Admin Email] Notificación enviada a ${to} vía SMTP (${smtpHost}): ${subject}`);
-      return { sent: true, provider: "smtp" };
+      console.log(`[Admin Email] Notificación enviada exitosamente a ${to} vía Gmail SMTP (${smtpUser}): ${subject}`);
+      return { sent: true, provider: isGmail ? "Gmail SMTP" : `SMTP (${smtpHost})` };
     } catch (smtpErr: any) {
       console.warn("[Admin Email] SMTP delivery error:", smtpErr.message || smtpErr);
+      lastError = `Error Gmail/SMTP: ${smtpErr.message || smtpErr}`;
+    }
+  } else {
+    if (!smtpUser || !cleanPass) {
+      console.warn(`[Admin Email] Faltan variables SMTP: user=${!!smtpUser}, pass=${!!cleanPass}`);
     }
   }
 
@@ -1123,7 +1148,12 @@ async function sendAdminNotificationEmail(params: {
   } catch (_) {}
 
   console.log(`[Admin Email Fallback Log] Para: ${to} | Asunto: ${subject}\n${text}`);
-  return { sent: false, provider: "log_only", error: "Configura RESEND_API_KEY o GMAIL_USER + GMAIL_APP_PASSWORD en las variables de entorno para entrega directa por correo." };
+  const detailedError = lastError || (!cleanPass 
+    ? "Falta GMAIL_APP_PASSWORD en Environment de Render" 
+    : !smtpUser 
+    ? "Falta GMAIL_USER en Environment de Render" 
+    : "No se pudo conectar con el servidor de correo");
+  return { sent: false, provider: "log_only", error: detailedError };
 }
 
 // Endpoint: Check if email exists & has PIN
@@ -2799,6 +2829,8 @@ async function startViteDevServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    const emailStatus = getEmailConfigurationStatus();
+    console.log(`[Email System] Proveedor activo: ${emailStatus.activeProvider} (Configurado: ${emailStatus.isConfigured}, Usuario: ${emailStatus.smtpUserConfigured ? 'OK' : 'Falta'}, Pass: ${emailStatus.smtpPassConfigured ? 'OK' : 'Falta'})`);
   });
 }
 
