@@ -199,12 +199,20 @@ export default function App() {
   const [savedQuizQuestions, setSavedQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizVersion, setQuizVersion] = useState(0);
 
-  // Modo Kids / Modo Búho Sabio Gamificado
-  const [isKidsGameMode, setIsKidsGameMode] = useState<boolean>(() => {
+  // Modo Juego / Gamificación Académica (Fácil | Medio | Difícil)
+  const [isGameMode, setIsGameMode] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('kids_game_mode') === 'true';
+      return localStorage.getItem('app_game_mode') !== 'false';
     } catch {
-      return false;
+      return true;
+    }
+  });
+  const [gameDifficulty, setGameDifficulty] = useState<'facil' | 'medio' | 'dificil'>(() => {
+    try {
+      const saved = localStorage.getItem('app_game_difficulty');
+      return (saved === 'facil' || saved === 'medio' || saved === 'dificil') ? saved : 'medio';
+    } catch {
+      return 'medio';
     }
   });
   const [kidGems, setKidGems] = useState<number>(() => {
@@ -216,15 +224,22 @@ export default function App() {
     }
   });
 
-  const handleToggleKidsMode = () => {
-    setIsKidsGameMode(prev => {
+  const handleToggleGameMode = () => {
+    setIsGameMode(prev => {
       const next = !prev;
       try {
-        localStorage.setItem('kids_game_mode', String(next));
+        localStorage.setItem('app_game_mode', String(next));
       } catch (_) {}
       if (next) owlAudio.playLevelUpChime();
       return next;
     });
+  };
+
+  const handleSetGameDifficulty = (lvl: 'facil' | 'medio' | 'dificil') => {
+    setGameDifficulty(lvl);
+    try {
+      localStorage.setItem('app_game_difficulty', lvl);
+    } catch (_) {}
   };
 
   const handleAddGems = (amount: number) => {
@@ -1939,34 +1954,62 @@ export default function App() {
           </div>
         )}
 
-        {/* Toggle Modo Kids / Búho Sabio */}
-        <div className="mb-5 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-sky-500/10 to-emerald-500/10 border border-amber-400/30 flex items-center justify-between shrink-0 shadow-sm">
-          <div className="flex items-center gap-2.5">
-            <span className="text-2xl animate-bounce">🦉</span>
-            <div>
-              <span className="font-mono text-[9px] uppercase tracking-wider text-amber-300 font-bold block">
-                Modo Niños &bull; Juego
-              </span>
-              <span className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                <span>Búho Sabio</span>
-                {isKidsGameMode && (
-                  <span className="text-[10px] font-mono text-amber-300 bg-amber-400/20 px-1.5 py-0.5 rounded-full">
-                    💎 {kidGems}
-                  </span>
-                )}
-              </span>
+        {/* Panel de Gamificación & Selector de Dificultad Académica */}
+        <div className="mb-5 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-sky-500/10 to-emerald-500/10 border border-amber-400/30 flex flex-col gap-2.5 shrink-0 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🦉</span>
+              <div>
+                <span className="font-mono text-[9px] uppercase tracking-wider text-amber-300 font-bold block">
+                  Modo Desafío &bull; Active Recall
+                </span>
+                <span className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                  <span>Archie Mentor</span>
+                  {isGameMode && (
+                    <span className="text-[10px] font-mono text-amber-300 bg-amber-400/20 px-1.5 py-0.5 rounded-full font-bold">
+                      💎 {kidGems}
+                    </span>
+                  )}
+                </span>
+              </div>
             </div>
+            <button
+              onClick={handleToggleGameMode}
+              className={`px-2.5 py-1 rounded-xl text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer border ${
+                isGameMode
+                  ? 'bg-amber-400 text-black border-amber-300 shadow-md font-black'
+                  : 'bg-white/5 text-neutral-400 border-white/10 hover:text-white'
+              }`}
+            >
+              {isGameMode ? 'ON 🎮' : 'OFF'}
+            </button>
           </div>
-          <button
-            onClick={handleToggleKidsMode}
-            className={`px-2.5 py-1 rounded-xl text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer border ${
-              isKidsGameMode
-                ? 'bg-amber-400 text-black border-amber-300 shadow-md font-black'
-                : 'bg-white/5 text-neutral-400 border-white/10 hover:text-white'
-            }`}
-          >
-            {isKidsGameMode ? 'ON ✨' : 'OFF'}
-          </button>
+
+          {/* Selector de Dificultad: Fácil | Medio | Difícil */}
+          {isGameMode && (
+            <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-1">
+              <span className="text-[9px] font-mono font-bold text-neutral-400 uppercase">Nivel:</span>
+              <div className="flex items-center gap-1">
+                {(['facil', 'medio', 'dificil'] as const).map(lvl => (
+                  <button
+                    key={lvl}
+                    onClick={() => handleSetGameDifficulty(lvl)}
+                    className={`px-2 py-0.5 rounded-lg text-[9px] font-mono font-bold uppercase transition-all cursor-pointer ${
+                      gameDifficulty === lvl
+                        ? lvl === 'facil'
+                          ? 'bg-emerald-500 text-black'
+                          : lvl === 'medio'
+                          ? 'bg-amber-400 text-black'
+                          : 'bg-rose-500 text-white'
+                        : 'text-neutral-400 hover:text-white bg-white/5'
+                    }`}
+                  >
+                    {lvl === 'facil' ? 'Fácil' : lvl === 'medio' ? 'Medio' : 'Difícil'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest block mb-4 shrink-0 font-bold">Modos de Estudio</span>
@@ -2077,7 +2120,7 @@ export default function App() {
               [04] MAPA_CONCEPTUAL_VISUAL 🗺️
             </h4>
             <p className="text-[10px] text-ink-muted leading-relaxed">
-              Burbujas interactivas, analogías para chicos y retos con gemas.
+              Burbujas interactivas, analogías prácticas y puntos de control.
             </p>
           </button>
 
@@ -2443,18 +2486,18 @@ export default function App() {
           {/* Floating Reader Action across all screens */}
           {(files.length > 0 || studyText) && (
             <div className="sticky top-0 z-30 flex items-center justify-end gap-2.5 mb-4 pointer-events-none flex-wrap">
-              {/* Pill de Modo Niños / Búho Sabio */}
+              {/* Pill de Modo Desafío / Archie */}
               <button
-                onClick={handleToggleKidsMode}
+                onClick={handleToggleGameMode}
                 className={`pointer-events-auto px-3 py-1.5 rounded-xl border font-mono text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-lg flex items-center gap-1.5 transition-all cursor-pointer ${
-                  isKidsGameMode
+                  isGameMode
                     ? 'bg-amber-500/20 border-amber-400 text-amber-200'
                     : 'bg-zinc-900/80 border-white/10 text-neutral-400 hover:text-white'
                 }`}
-                title="Modo Niños con el Búho Sabio"
+                title="Modo Desafío Gamificado con Archie"
               >
                 <span>🦉</span>
-                <span>{isKidsGameMode ? `Búho Sabio (💎 ${kidGems})` : 'Modo Niños'}</span>
+                <span>{isGameMode ? `Modo Desafío (💎 ${kidGems})` : 'Modo Desafío'}</span>
               </button>
 
               {/* Botón Acceso Rápido al Mapa */}
@@ -2954,21 +2997,21 @@ export default function App() {
                       </p>
                     </button>
 
-                    {/* Method 5: Mapa Conceptual Visual Interactivo (Especial Niños) */}
+                    {/* Method 5: Mapa Conceptual Visual & Desafíos Gamificados */}
                     <button
                       disabled={files.length === 0 && !studyText}
                       onClick={() => setViewMode('diagram')}
                       className="w-full text-left py-6 border-b border-white/5 hover:border-amber-400/40 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-300 group text-ink bg-transparent cursor-pointer"
                     >
                       <span className="font-mono text-[9px] text-amber-400 uppercase tracking-widest block mb-1 font-bold flex items-center justify-between">
-                        <span>05. Aprendizaje Visual &bull; Especial Niños</span>
+                        <span>05. Mapa Conceptual & Desafíos Gamificados</span>
                         <span className="bg-amber-400 text-black px-1.5 py-0.5 rounded text-[8px] font-black">NUEVO</span>
                       </span>
                       <span className="font-display font-bold text-lg text-white group-hover:text-amber-300 transition-all block mb-1 uppercase flex items-center gap-2">
-                        <span>🗺️ Mapa Conceptual y Retos del Búho</span>
+                        <span>🗺️ Mapa Conceptual y Active Recall</span>
                       </span>
                       <p className="text-ink-muted text-xs leading-relaxed">
-                        Explora burbujas de conceptos interactivos con analogías para chicos, curiosidades y desafíos con gemas.
+                        Explora nodos conceptuales con analogías prácticas, niveles Fácil/Medio/Difícil y preguntas de active recall con gemas.
                       </p>
                     </button>
                   </div>
@@ -3049,7 +3092,8 @@ export default function App() {
               <InteractiveDiagram
                 studyText={studyText}
                 activeTitle={activeStudyTitle || (files[0]?.name?.replace(/\.[^/.]+$/, '')) || 'Cuaderno de Estudio'}
-                isKidsMode={isKidsGameMode}
+                isGameMode={isGameMode}
+                initialDifficulty={gameDifficulty}
                 onBack={() => setViewMode('setup')}
                 onAddGems={handleAddGems}
               />

@@ -3,16 +3,19 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Sparkles, ZoomIn, ZoomOut, RotateCcw, Maximize2, Minimize2, 
   Lightbulb, ArrowRight, CheckCircle2, XCircle, HelpCircle, 
-  Compass, Award, RefreshCw, BookOpen, Layers
+  Compass, Award, RefreshCw, BookOpen, Layers, Flame, Target
 } from 'lucide-react';
 import { WiseOwlAvatar, OwlMood, owlAudio, ConfettiCanvas } from './WiseOwlAvatar';
+
+export type DifficultyLevel = 'facil' | 'medio' | 'dificil';
 
 export interface DiagramNode {
   id: string;
   label: string;
   category: string;
   shortDesc: string;
-  kidExplanation: string;
+  practicalExplanation?: string;
+  kidExplanation?: string; // Retrocompatibilidad
   funFact?: string;
   emoji: string;
   color?: string;
@@ -37,6 +40,7 @@ export interface DiagramData {
     label: string;
     emoji: string;
     summary: string;
+    practicalExample?: string;
     kidExample?: string;
   };
   nodes: DiagramNode[];
@@ -46,7 +50,8 @@ export interface DiagramData {
 interface InteractiveDiagramProps {
   studyText: string;
   activeTitle?: string;
-  isKidsMode?: boolean;
+  isGameMode?: boolean;
+  initialDifficulty?: DifficultyLevel;
   onBack?: () => void;
   onAddGems?: (amount: number) => void;
 }
@@ -54,17 +59,19 @@ interface InteractiveDiagramProps {
 export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
   studyText,
   activeTitle,
-  isKidsMode = true,
+  isGameMode = true,
+  initialDifficulty = 'medio',
   onBack,
   onAddGems
 }) => {
   const [diagram, setDiagram] = useState<DiagramData | null>(null);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>(initialDifficulty);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedNode, setSelectedNode] = useState<DiagramNode | null>(null);
   const [zoom, setZoom] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [owlMood, setOwlMood] = useState<OwlMood>('happy');
-  const [owlSpeech, setOwlSpeech] = useState<string>('¡Toca cualquier burbuja para descubrir sus secretos!');
+  const [owlSpeech, setOwlSpeech] = useState<string>('Selecciona un nodo para analizar relaciones y desafiar tu retención.');
   const [showConfetti, setShowConfetti] = useState(false);
 
   // Estados del Mini-Quiz dentro de la tarjeta
@@ -74,25 +81,26 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Cargar o generar diagrama
-  const fetchDiagram = async () => {
+  // Cargar o regenerar diagrama según dificultad
+  const fetchDiagram = async (diffToUse: DifficultyLevel = difficulty) => {
     setIsLoading(true);
     try {
       const res = await fetch('/api/generate-diagram', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ studyText, title: activeTitle })
+        body: JSON.stringify({ studyText, title: activeTitle, difficulty: diffToUse })
       });
       const data = await res.json();
       if (data.diagram) {
         setDiagram(data.diagram);
         setOwlMood('happy');
-        setOwlSpeech('¡Mapa listo! Explora los conceptos conectados.');
+        const diffLabels = { facil: 'Introductorio', medio: 'Universitario Estándar', dificil: 'Exigente / Examen' };
+        setOwlSpeech(`Mapa conceptual generado (Nivel: ${diffLabels[diffToUse]}).`);
       }
     } catch (err) {
       console.error("Error generando diagrama:", err);
       setOwlMood('thinking');
-      setOwlSpeech('Hubo un pequeño tropiezo, pero podemos intentarlo de nuevo.');
+      setOwlSpeech('Se produjo una demora en la generación. Probemos nuevamente.');
     } finally {
       setIsLoading(false);
     }
@@ -100,16 +108,22 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
 
   useEffect(() => {
     if (studyText) {
-      fetchDiagram();
+      fetchDiagram(difficulty);
     }
   }, [studyText, activeTitle]);
+
+  const handleDifficultyChange = (newDiff: DifficultyLevel) => {
+    if (newDiff === difficulty || isLoading) return;
+    setDifficulty(newDiff);
+    fetchDiagram(newDiff);
+  };
 
   const handleNodeClick = (node: DiagramNode) => {
     setSelectedNode(node);
     setSelectedOption(null);
     setQuizSubmitted(false);
     setOwlMood('thinking');
-    setOwlSpeech(`¡Gran elección! Mira qué significa "${node.label}".`);
+    setOwlSpeech(`Analizando: "${node.label}". Revisa su definición y comprueba tu retención.`);
   };
 
   const handleSelectQuizOption = (index: number) => {
@@ -124,14 +138,14 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
 
     if (isCorrect) {
       setOwlMood('celebrating');
-      setOwlSpeech('¡CORRECTO! ¡Eres un genio del saber! 🌟');
+      setOwlSpeech('¡Respuesta exacta! Excelente comprensión del marco conceptual.');
       owlAudio.playSuccessChime();
       setShowConfetti(true);
       if (onAddGems) onAddGems(15);
       setSolvedNodes(prev => new Set([...prev, selectedNode.id]));
     } else {
       setOwlMood('hint');
-      setOwlSpeech(selectedNode.quickQuiz.hint || '¡Casi! Piensa en el ejemplo de la vida real y prueba otra vez.');
+      setOwlSpeech(selectedNode.quickQuiz.hint || 'Revisa la relación causal del concepto y vuelve a probar.');
       owlAudio.playEncouragementChime();
     }
   };
@@ -154,10 +168,10 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[480px] p-8 text-center bg-zinc-950/40 border border-white/5 rounded-2xl">
-        <WiseOwlAvatar mood="thinking" size="lg" speechText="¡Estoy organizando todas las ideas de tu apunte en un mapa visual!" />
+        <WiseOwlAvatar mood="thinking" size="lg" speechText="Extrayendo estructura lógica, variables y relaciones del apunte..." />
         <div className="mt-6 flex items-center gap-3 text-amber-300 font-mono text-xs uppercase tracking-wider">
           <RefreshCw className="w-4 h-4 animate-spin" />
-          <span>Diseñando mapa conceptual interactivo...</span>
+          <span>Estructurando mapa conceptual ({difficulty.toUpperCase()})...</span>
         </div>
       </div>
     );
@@ -166,12 +180,12 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
   if (!diagram) {
     return (
       <div className="p-8 text-center bg-zinc-950/40 border border-white/5 rounded-2xl">
-        <WiseOwlAvatar mood="thinking" speechText="No pude crear el mapa con este texto. ¡Intentémoslo de nuevo!" />
+        <WiseOwlAvatar mood="thinking" speechText="No se pudo estructurar el mapa con este texto. Intentemos regenerarlo." />
         <button
-          onClick={fetchDiagram}
+          onClick={() => fetchDiagram(difficulty)}
           className="mt-4 px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer"
         >
-          Reintentar Mapa
+          Reintentar Estructuración
         </button>
       </div>
     );
@@ -186,7 +200,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
     >
       <ConfettiCanvas active={showConfetti} onComplete={() => setShowConfetti(false)} />
 
-      {/* Barra Superior con Controles */}
+      {/* Barra Superior con Controles y Selector de Dificultad */}
       <div className="p-4 bg-zinc-950/80 backdrop-blur-md border-b border-white/10 flex items-center justify-between z-20 flex-wrap gap-3">
         <div className="flex items-center gap-3">
           {onBack && (
@@ -200,7 +214,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
           <div>
             <span className="font-mono text-[9px] text-amber-400 font-bold uppercase tracking-widest flex items-center gap-1.5">
               <Compass className="w-3.5 h-3.5" />
-              <span>MAPA CONCEPTUAL VISUAL INTERACTIVO</span>
+              <span>MAPA CONCEPTUAL &bull; ACTIVE RECALL</span>
             </span>
             <h3 className="text-base font-extrabold text-white tracking-tight flex items-center gap-2">
               <span>{diagram.centralTopic.emoji}</span>
@@ -209,8 +223,36 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
           </div>
         </div>
 
-        {/* Controles de Vista y Zoom */}
-        <div className="flex items-center gap-2">
+        {/* Selector de Dificultad Académica y Zoom */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Selector de Dificultad: Fácil | Medio | Difícil */}
+          <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+            <span className="text-[9px] font-mono font-bold uppercase px-2 text-neutral-400 flex items-center gap-1">
+              <Target className="w-3 h-3 text-amber-400" />
+              <span>Nivel:</span>
+            </span>
+            {(['facil', 'medio', 'dificil'] as const).map(lvl => (
+              <button
+                key={lvl}
+                onClick={() => handleDifficultyChange(lvl)}
+                disabled={isLoading}
+                className={`px-2.5 py-1 rounded-lg text-[9.5px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  difficulty === lvl
+                    ? lvl === 'facil'
+                      ? 'bg-emerald-500 text-black shadow-sm'
+                      : lvl === 'medio'
+                      ? 'bg-amber-400 text-black shadow-sm'
+                      : 'bg-rose-500 text-white shadow-sm'
+                    : 'text-neutral-400 hover:text-white bg-transparent'
+                }`}
+                title={`Nivel ${lvl.toUpperCase()}`}
+              >
+                {lvl === 'facil' ? 'Fácil' : lvl === 'medio' ? 'Medio' : 'Difícil'}
+              </button>
+            ))}
+          </div>
+
+          {/* Controles de Zoom */}
           <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-0.5">
             <button
               onClick={() => handleZoom(-0.15)}
@@ -250,7 +292,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
 
       {/* Lienzo del Mapa Visual (Nodos y Conexiones) */}
       <div className="flex-grow relative overflow-auto p-8 flex items-center justify-center min-h-[500px]">
-        {/* Fondo punteado sutil para dar sensación de plano */}
+        {/* Fondo punteado sutil tipo blueprint */}
         <div 
           className="absolute inset-0 opacity-15 pointer-events-none"
           style={{
@@ -265,7 +307,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
         >
           {/* NODO CENTRAL PRINCIPAL */}
           <motion.div
-            whileHover={{ scale: 1.05 }}
+            whileHover={{ scale: 1.04 }}
             whileTap={{ scale: 0.98 }}
             className="p-6 rounded-3xl bg-gradient-to-br from-amber-500/20 via-zinc-900 to-zinc-950 border-2 border-amber-400/50 shadow-[0_0_40px_rgba(251,191,36,0.2)] text-center max-w-md cursor-pointer relative z-10"
             onClick={() => {
@@ -274,16 +316,16 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
                 label: diagram.centralTopic.label,
                 category: 'central',
                 shortDesc: diagram.centralTopic.summary,
-                kidExplanation: diagram.centralTopic.kidExample || "Este es el corazón del tema: reúne todas las piezas del rompecabezas.",
+                practicalExplanation: diagram.centralTopic.practicalExample || diagram.centralTopic.kidExample || "Núcleo estructurante del cual derivan las hipótesis y variables del documento.",
                 emoji: diagram.centralTopic.emoji,
                 color: '#fbbf24'
               });
               setOwlMood('happy');
-              setOwlSpeech(`¡Este es el tema central! El tronco del que nacen todas las ramas.`);
+              setOwlSpeech(`Núcleo temático: todas las variables del apunte se articulan a partir de este eje.`);
             }}
           >
             <span className="text-4xl mb-2 block filter drop-shadow">{diagram.centralTopic.emoji}</span>
-            <span className="font-mono text-[9px] uppercase tracking-widest text-amber-300 font-bold block mb-1">TEMA PRINCIPAL</span>
+            <span className="font-mono text-[9px] uppercase tracking-widest text-amber-300 font-bold block mb-1">EJE TEMÁTICO CENTRAL</span>
             <h2 className="text-xl font-extrabold text-white tracking-tight leading-snug">
               {diagram.centralTopic.label}
             </h2>
@@ -332,10 +374,10 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
                     {isSolved ? (
                       <span className="flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full">
                         <CheckCircle2 className="w-3 h-3" />
-                        <span>¡Logrado!</span>
+                        <span>Verificado</span>
                       </span>
                     ) : node.quickQuiz ? (
-                      <span className="text-[10px] font-mono text-amber-300 bg-amber-500/15 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <span className="text-[10px] font-mono text-amber-300 bg-amber-500/15 px-2 py-0.5 rounded-full flex items-center gap-1 font-bold">
                         <Sparkles className="w-3 h-3 text-amber-400" />
                         <span>+15 💎</span>
                       </span>
@@ -371,7 +413,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
         </motion.div>
       </div>
 
-      {/* AVATAR FLOTANTE DEL BÚHO SABIO (Esquina inferior derecha) */}
+      {/* AVATAR FLOTANTE DE ARCHIE (Mentor Académico) */}
       <div className="absolute bottom-4 right-4 z-30">
         <WiseOwlAvatar
           mood={owlMood}
@@ -379,7 +421,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
           size="md"
           onTap={() => {
             setOwlMood('happy');
-            setOwlSpeech('¡Soy Archie! Explora las burbujas para aprender jugando.');
+            setOwlSpeech(`Mentoría activa (Nivel ${difficulty.toUpperCase()}). Haz clic en los nodos para profundizar.`);
             owlAudio.playSuccessChime();
           }}
         />
@@ -416,7 +458,7 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
                 <span className="text-4xl p-2.5 rounded-2xl bg-white/5 border border-white/10">{selectedNode.emoji}</span>
                 <div>
                   <span className="font-mono text-[9px] uppercase tracking-wider text-amber-400 font-bold">
-                    EXPLORADOR VISUAL &bull; {selectedNode.category.toUpperCase()}
+                    EXPLORADOR CONCEPTUAL &bull; {selectedNode.category.toUpperCase()} &bull; [{difficulty.toUpperCase()}]
                   </span>
                   <h3 className="text-xl font-black text-white tracking-tight">
                     {selectedNode.label}
@@ -424,34 +466,36 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
                 </div>
               </div>
 
-              {/* Explicación formal */}
+              {/* Definición Académica Formal */}
               <div className="mb-4 p-3.5 rounded-2xl bg-white/5 border border-white/5">
                 <span className="font-mono text-[9px] uppercase text-neutral-400 font-bold block mb-1">
-                  📖 En pocas palabras
+                  📖 Definición Conceptual
                 </span>
                 <p className="text-xs text-neutral-200 leading-relaxed">
                   {selectedNode.shortDesc}
                 </p>
               </div>
 
-              {/* Explicación para Niños (Analogía cotidiana) */}
-              <div className="mb-4 p-4 rounded-2xl bg-gradient-to-r from-sky-500/10 to-indigo-500/10 border border-sky-500/30">
-                <span className="font-mono text-[9px] uppercase text-sky-300 font-bold flex items-center gap-1.5 mb-1.5">
-                  <Lightbulb className="w-3.5 h-3.5 text-yellow-300" />
-                  <span>Para entenderlo fácil (Ejemplo para ti)</span>
-                </span>
-                <p className="text-xs text-neutral-100 font-medium leading-relaxed">
-                  {selectedNode.kidExplanation}
-                </p>
-              </div>
+              {/* Enfoque Práctico / Analogía Operativa */}
+              {(selectedNode.practicalExplanation || selectedNode.kidExplanation) && (
+                <div className="mb-4 p-4 rounded-2xl bg-gradient-to-r from-sky-500/10 to-indigo-500/10 border border-sky-500/30">
+                  <span className="font-mono text-[9px] uppercase text-sky-300 font-bold flex items-center gap-1.5 mb-1.5">
+                    <Lightbulb className="w-3.5 h-3.5 text-yellow-300" />
+                    <span>Enfoque Práctico / Analogía Intuitiva</span>
+                  </span>
+                  <p className="text-xs text-neutral-100 font-medium leading-relaxed">
+                    {selectedNode.practicalExplanation || selectedNode.kidExplanation}
+                  </p>
+                </div>
+              )}
 
-              {/* Dato Curioso (Fun Fact) */}
+              {/* Dato Relevante / Aplicación Técnica */}
               {selectedNode.funFact && (
                 <div className="mb-5 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5">
                   <span className="text-base shrink-0">💡</span>
                   <div>
                     <span className="font-mono text-[8.5px] uppercase text-amber-300 font-bold block">
-                      ¿Sabías que...?
+                      Aplicación de Campo / Dato Relevante
                     </span>
                     <p className="text-[11.5px] text-amber-100 leading-relaxed">
                       {selectedNode.funFact}
@@ -460,16 +504,16 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
                 </div>
               )}
 
-              {/* Mini-Desafío del Búho (Para ganar gemas) */}
+              {/* Punto de Control Cognitivo (Mini-Quiz para Gemas) */}
               {selectedNode.quickQuiz && (
                 <div className="p-4 rounded-2xl bg-zinc-900/90 border border-emerald-500/30">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-mono text-[9px] uppercase tracking-wider text-emerald-400 font-bold flex items-center gap-1">
                       <Award className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Desafío del Búho Sabio (+15 💎)</span>
+                      <span>Punto de Control Cognitivo (+15 💎)</span>
                     </span>
                     {solvedNodes.has(selectedNode.id) && (
-                      <span className="text-[10px] font-mono text-emerald-300 font-bold">¡Completado!</span>
+                      <span className="text-[10px] font-mono text-emerald-300 font-bold">¡Validado!</span>
                     )}
                   </div>
 
@@ -513,14 +557,14 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
                       onClick={handleVerifyQuiz}
                       className="w-full py-2 bg-gradient-to-r from-emerald-500 to-teal-400 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed text-black font-mono font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-md"
                     >
-                      Comprobar Respuesta
+                      Validar Comprensión
                     </button>
                   ) : (
                     <div className="text-center pt-1">
                       <span className="text-xs font-mono font-bold text-neutral-300">
                         {selectedOption === selectedNode.quickQuiz.correctIndex
-                          ? "🎉 ¡Ganaste 15 gemas!"
-                          : "💡 Puedes volver a intentarlo cuando quieras."}
+                          ? "🎉 ¡Concepto asimilado! +15 Gemas acumuladas."
+                          : "💡 Puedes revisar el apunte y volver a intentar."}
                       </span>
                     </div>
                   )}

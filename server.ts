@@ -2303,40 +2303,55 @@ ${cleanText.substring(0, 50000)}`,
   }
 });
 
-// Endpoint: Generación de Mapa Conceptual / Diagrama Interactivo para Niños y Estudio Visual
+// Endpoint: Generación de Mapa Conceptual / Diagrama Interactivo Gamificado (Fácil | Medio | Difícil)
 app.post("/api/generate-diagram", async (req, res) => {
-  const { studyText, title } = req.body;
+  const { studyText, title, difficulty = 'medio' } = req.body;
   if (!studyText || !studyText.trim()) {
     return res.status(400).json({ error: "Falta el texto de estudio para generar el diagrama." });
   }
 
   const customKey = req.headers['x-gemini-api-key'] as string | undefined;
   const cleanText = cleanStudyTextForAnalysis(studyText);
+  const diffLevel = ['facil', 'medio', 'dificil'].includes(difficulty) ? difficulty : 'medio';
+
+  const diffPromptDirectives = {
+    facil: `NIVEL DE EXIGENCIA: FÁCIL (Introductorio / Repaso Rápido)
+- Prioriza conceptos fundamentales y analogías prácticas directas del mundo cotidiano.
+- Preguntas de validación claras que refuercen la comprensión básica.`,
+    medio: `NIVEL DE EXIGENCIA: MEDIO (Estándar Universitario / Terciario)
+- Equilibrio entre terminología académica rigurosa y explicaciones claras y dinámicas.
+- Preguntas de active recall orientadas a relaciones conceptuales y aplicaciones de campo.`,
+    dificil: `NIVEL DE EXIGENCIA: DIFÍCIL (Avanzado / Examen Riguroso)
+- Máxima precisión conceptual, terminología académica formal, análisis crítico de causas y efectos complejos.
+- Preguntas analíticas desafiantes que exijan pensar y deducir, no solo memorizar.`
+  }[diffLevel];
 
   try {
     const ai = getAiClient(customKey);
     const response = await generateContentWithFallback(ai, {
-      contents: `Transforma el contenido académico de este documento en un MAPA CONCEPTUAL / DIAGRAMA VISUAL INTERACTIVO altamente pedagógico, diseñado para facilitar la comprensión y retención de un estudiante (especialmente visual o joven).
+      contents: `Transforma el contenido académico de este documento en un MAPA CONCEPTUAL VISUAL INTERACTIVO Y GAMIFICADO de alto impacto para estudiantes y universitarios.
 
-REGLAS:
-1. Crea un nodo central que resuma la idea principal del tema.
-2. Identifica entre 4 y 7 nodos secundarios conectados (conceptos clave, causas, efectos, procesos o ejemplos).
+${diffPromptDirectives}
+
+REGLAS ESTRUCTURALES:
+1. Crea un nodo central que sintetice el núcleo temático del texto.
+2. Identifica entre 4 y 7 nodos secundarios conectados (conceptos clave, procesos, causas/efectos o aplicaciones prácticas).
 3. Cada nodo debe incluir:
-   - "label": Título corto y claro (2 a 4 palabras).
-   - "emoji": Un emoji representativo y divertido (ej. ⚡, 💧, 🏛️, 🧠, ☀️, 🚀, 🧪, 🌿).
-   - "shortDesc": Explicación concisa y formal (1 a 2 oraciones).
-   - "kidExplanation": Explicación con una analogía simple de la vida diaria ("Imagina que...").
-   - "funFact": Un dato curioso o '¿Sabías que...?' que llame la atención.
-   - "category": 'central' | 'clave' | 'proceso' | 'ejemplo' | 'dato'
-   - "color": Uno de estos colores temáticos: '#10b981' (verde), '#38bdf8' (azul cielo), '#fbbf24' (ámbar), '#a855f7' (púrpura), '#f43f5e' (rosa), '#f97316' (naranja).
-4. Define las conexiones ("connections") con una etiqueta ("label") que explique la relación (ej. "provoca", "se divide en", "necesita", "produce", "ejemplo de").
-5. Opcional: Para cada nodo agrega un "quickQuiz": { "question": "¿...?", "options": ["A", "B", "C"], "correctIndex": 0, "hint": "Pista del Búho..." } para que el alumno pueda ganar gemas interactivas al tocar el nodo.
+   - "label": Título sintético y memorable (2 a 4 palabras).
+   - "emoji": Emoji representativo de la disciplina (ej. ⚡, 🧬, 🏛️, 🧠, ⚖️, 🔬, 📊, 🌿).
+   - "shortDesc": Definición académica formal y concisa (1 a 2 oraciones).
+   - "practicalExplanation": Explicación con una analogía clara o caso práctico de la vida real ("En la práctica, esto funciona como...").
+   - "funFact": Un dato clave, curiosidad histórica o aplicación técnica relevante.
+   - "category": 'central' | 'clave' | 'proceso' | 'aplicacion' | 'teoria'
+   - "color": Un color temático ('#10b981', '#38bdf8', '#fbbf24', '#a855f7', '#f43f5e', '#f97316').
+4. Define las conexiones ("connections") con una etiqueta relacional ("label") precisa (ej. "fundamenta", "desencadena", "se compone de", "aplica en", "regula").
+5. Agrega para cada nodo un "quickQuiz": { "question": "¿...?", "options": ["A", "B", "C"], "correctIndex": 0, "hint": "Pista del Mentor..." } ajustado a la dificultad elegida para ganar gemas 💎.
 
-Título del cuaderno o tema: ${title || 'Contenido de Estudio'}
+Título del cuaderno: ${title || 'Apunte de Estudio'}
 Texto:
 ${cleanText.substring(0, 45000)}`,
       config: {
-        systemInstruction: "Eres un pedagogo experto en aprendizaje visual e infografías educativas. Diseña mapas conceptuales claros, estimulantes y visuales con analogías divertidas y datos curiosos.",
+        systemInstruction: "Eres un docente universitario y pedagogo experto en mapas conceptuales y active recall gamificado. Genera diagramas precisos, estimulantes y conceptualmente impecables.",
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -2348,7 +2363,7 @@ ${cleanText.substring(0, 45000)}`,
                 label: { type: Type.STRING },
                 emoji: { type: Type.STRING },
                 summary: { type: Type.STRING },
-                kidExample: { type: Type.STRING }
+                practicalExample: { type: Type.STRING }
               },
               required: ['id', 'label', 'emoji', 'summary']
             },
@@ -2361,7 +2376,7 @@ ${cleanText.substring(0, 45000)}`,
                   label: { type: Type.STRING },
                   category: { type: Type.STRING },
                   shortDesc: { type: Type.STRING },
-                  kidExplanation: { type: Type.STRING },
+                  practicalExplanation: { type: Type.STRING },
                   funFact: { type: Type.STRING },
                   emoji: { type: Type.STRING },
                   color: { type: Type.STRING },
@@ -2377,7 +2392,7 @@ ${cleanText.substring(0, 45000)}`,
                     required: ['question', 'options', 'correctIndex']
                   }
                 },
-                required: ['id', 'label', 'shortDesc', 'kidExplanation', 'emoji']
+                required: ['id', 'label', 'shortDesc', 'practicalExplanation', 'emoji']
               }
             },
             connections: {
@@ -2399,89 +2414,89 @@ ${cleanText.substring(0, 45000)}`,
     });
 
     const cleanResult = cleanJsonText(response.text || '');
-    return res.json({ diagram: JSON.parse(cleanResult) });
+    return res.json({ diagram: JSON.parse(cleanResult), difficulty: diffLevel });
   } catch (error: any) {
     console.warn("[Server Diagram Fallback] Usando generador local de mapa conceptual:", error.message || error);
-    const fallbackDiagram = generateFallbackDiagram(cleanText, title);
-    return res.json({ diagram: fallbackDiagram });
+    const fallbackDiagram = generateFallbackDiagram(cleanText, title, diffLevel);
+    return res.json({ diagram: fallbackDiagram, difficulty: diffLevel });
   }
 });
 
-function generateFallbackDiagram(text: string, title?: string) {
+function generateFallbackDiagram(text: string, title?: string, difficulty: string = 'medio') {
   const words = text.split(/\s+/).filter(w => w.length > 5);
   const sampleWords = Array.from(new Set(words.map(w => w.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, '')))).slice(0, 15);
-  const mainTitle = title || (sampleWords[0] ? `Estudio de ${sampleWords[0]}` : "Tema Principal");
+  const mainTitle = title || (sampleWords[0] ? `Estudio de ${sampleWords[0]}` : "Núcleo Temático");
 
   const colors = ['#10b981', '#38bdf8', '#fbbf24', '#a855f7', '#f43f5e', '#f97316'];
-  const emojis = ['🧠', '⚡', '🌱', '🔍', '🚀', '💡'];
+  const emojis = ['🧠', '⚡', '🔬', '📊', '🏛️', '💡'];
 
   const nodes = [
     {
       id: "node_1",
-      label: sampleWords[1] ? sampleWords[1].toUpperCase() : "Concepto Base",
+      label: sampleWords[1] ? sampleWords[1].toUpperCase() : "Principio Teórico",
       category: "clave",
-      shortDesc: "Idea fundamental y punto de partida del tema.",
-      kidExplanation: "Imagina que es como los cimientos de una casa: sin esto, nada de lo demás se sostendría.",
-      funFact: "Los conceptos base son como bloques de Lego: uniéndolos puedes construir cualquier idea.",
+      shortDesc: "Fundamento conceptual que estructura el marco de análisis.",
+      practicalExplanation: "En la práctica, actúa como la base o cimiento sobre el cual se articulan las demás variables.",
+      funFact: "Los modelos conceptuales sólidos permiten predecir comportamientos sin necesidad de memorización mecánica.",
       emoji: emojis[0],
       color: colors[0],
       parentId: "central",
       quickQuiz: {
-        question: "¿Cuál es la función del concepto base?",
-        options: ["Sostener todas las demás ideas", "Decorar el texto", "No tiene importancia"],
+        question: difficulty === 'dificil' ? "¿Qué implicancia epistemológica tiene este principio en el modelo?" : "¿Cuál es el rol de este principio fundamental?",
+        options: ["Estructurar y dar coherencia al marco de análisis", "Es un elemento accesorio descartable", "Solo aplica a casos aislados"],
         correctIndex: 0,
-        hint: "Recuerda el ejemplo de los cimientos de una casa."
+        hint: "Analiza el rol de los cimientos en cualquier estructura conceptual."
       }
     },
     {
       id: "node_2",
-      label: sampleWords[2] ? sampleWords[2].toUpperCase() : "Proceso Activo",
+      label: sampleWords[2] ? sampleWords[2].toUpperCase() : "Dinámica y Proceso",
       category: "proceso",
-      shortDesc: "Cómo interactúan los elementos y qué pasos ocurren en orden.",
-      kidExplanation: "Es como una receta de cocina: primero un paso, luego el otro, y al final tenemos el resultado.",
-      funFact: "En la naturaleza y en las ciencias, casi todo ocurre a través de procesos paso a paso.",
+      shortDesc: "Secuencia operativa o mecanismo a través del cual interactúan los factores.",
+      practicalExplanation: "Funciona como un circuito o sistema secuencial donde cada fase depende de la anterior.",
+      funFact: "La mayoría de los sistemas complejos se descomponen en secuencias de entrada, transformación y salida.",
       emoji: emojis[1],
       color: colors[1],
       parentId: "central",
       quickQuiz: {
-        question: "¿A qué se parece un proceso?",
-        options: ["A una foto fija", "A una receta con pasos ordenados", "A un juego sin reglas"],
-        correctIndex: 1,
-        hint: "Pensá en cómo se prepara algo paso a paso."
+        question: "¿Cómo se describe la interacción de este proceso?",
+        options: ["Secuencia interconectada con relación de dependencia", "Eventos aleatorios sin causalidad", "Un estado estático sin transformaciones"],
+        correctIndex: 0,
+        hint: "Observa la secuencia de causas y consecuencias entre fases."
       }
     },
     {
       id: "node_3",
-      label: sampleWords[3] ? sampleWords[3].toUpperCase() : "Causa y Efecto",
+      label: sampleWords[3] ? sampleWords[3].toUpperCase() : "Variables y Causalidad",
       category: "clave",
-      shortDesc: "Qué dispara los fenómenos y qué consecuencias genera.",
-      kidExplanation: "Como una fila de fichas de dominó: empujas una y caen todas las demás.",
-      funFact: "Cada acción en el universo produce una reacción, ¡incluso en cómo pensamos!",
+      shortDesc: "Factores determinantes que condicionan el comportamiento del fenómeno.",
+      practicalExplanation: "Similar a una reacción en cadena donde modificar un parámetro altera el equilibrio general.",
+      funFact: "El análisis multifactorial es la competencia clave en el pensamiento universitario avanzado.",
       emoji: emojis[2],
       color: colors[2],
       parentId: "node_2",
       quickQuiz: {
-        question: "Cuando ocurre una causa, ¿qué suele pasar?",
-        options: ["Produce un efecto o consecuencia", "Nada cambia", "Desaparece el fenómeno"],
+        question: "¿Qué ocurre al variar uno de los parámetros determinantes?",
+        options: ["Impacta y altera el comportamiento del sistema", "El sistema permanece inerte e invariable", "Se neutralizan todas las variables"],
         correctIndex: 0,
-        hint: "Pensá en las fichas de dominó que caen en cadena."
+        hint: "Considera la noción de causalidad interdependiente."
       }
     },
     {
       id: "node_4",
-      label: sampleWords[4] ? sampleWords[4].toUpperCase() : "Aplicación Diaria",
-      category: "ejemplo",
-      shortDesc: "Dónde vemos este conocimiento en el mundo real que nos rodea.",
-      kidExplanation: "Es lo que te ayuda a entender por qué las cosas funcionan así en tu casa o en la escuela.",
-      funFact: "Todo lo que inventamos los seres humanos empezó como una pregunta curiosa en un apunte.",
+      label: sampleWords[4] ? sampleWords[4].toUpperCase() : "Aplicación en Campo",
+      category: "aplicacion",
+      shortDesc: "Implementación práctica, resolución de problemas y casos reales de estudio.",
+      practicalExplanation: "Permite transferir la teoría abstracta a la resolución de problemas profesionales concretos.",
+      funFact: "El conocimiento abstracto cobra su verdadero valor cuando se traduce en toma de decisiones efectivas.",
       emoji: emojis[3],
       color: colors[3],
       parentId: "node_1",
       quickQuiz: {
-        question: "¿Para qué sirve aprender este tema?",
-        options: ["Para entender el mundo real y resolver problemas", "Solo para memorizar", "Para nada"],
+        question: "¿Cuál es la finalidad última de transferir este concepto a campo?",
+        options: ["Resolver problemáticas concretas y fundamentar decisiones", "Acumular definiciones teóricas aisladas", "Sustituir la evidencia empírica"],
         correctIndex: 0,
-        hint: "El Búho dice: ¡El saber es una superherramienta para la vida real!"
+        hint: "Recuerda que el valor del conocimiento radica en su capacidad de resolución."
       }
     }
   ];
@@ -2491,15 +2506,15 @@ function generateFallbackDiagram(text: string, title?: string) {
       id: "central",
       label: mainTitle,
       emoji: "🦉",
-      summary: "Mapa visual organizado para explorar ideas paso a paso.",
-      kidExample: "Imagina un árbol: el tronco es este tema y las ramas son los descubrimientos que vas a hacer."
+      summary: "Estructura conceptual y relaciones analíticas del tema.",
+      practicalExample: "Visión panorámica que conecta fundamentos teóricos con aplicaciones operativas de campo."
     },
     nodes,
     connections: [
       { from: "central", to: "node_1", label: "se fundamenta en" },
-      { from: "central", to: "node_2", label: "funciona mediante" },
-      { from: "node_2", to: "node_3", label: "genera" },
-      { from: "node_1", to: "node_4", label: "se aplica en" }
+      { from: "central", to: "node_2", label: "se procesa mediante" },
+      { from: "node_2", to: "node_3", label: "determina" },
+      { from: "node_1", to: "node_4", label: "se traduce en" }
     ]
   };
 }
