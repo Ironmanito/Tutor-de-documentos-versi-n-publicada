@@ -19,6 +19,8 @@ import { trackUserActivity, trackUserAction, shouldPromptPeriodicFeedback, recor
 import { DocumentViewer } from './components/DocumentViewer';
 import { ConsentModal } from './components/ConsentModal';
 import { telemetry } from './lib/telemetry';
+import { InteractiveDiagram } from './components/InteractiveDiagram';
+import { WiseOwlAvatar, owlAudio } from './components/WiseOwlAvatar';
 
 class WebSocketSession {
   private ws: WebSocket;
@@ -192,10 +194,48 @@ export default function App() {
   
   const [topics, setTopics] = useState<Topic[]>([]);
   const [isGeneratingTopics, setIsGeneratingTopics] = useState(false);
-  const [viewMode, setViewMode] = useState<'setup' | 'visual' | 'session' | 'free_session' | 'multiple_choice' | 'oral_evaluator_setup' | 'oral_evaluator_session'>('setup');
+  const [viewMode, setViewMode] = useState<'setup' | 'visual' | 'diagram' | 'session' | 'free_session' | 'multiple_choice' | 'oral_evaluator_setup' | 'oral_evaluator_session'>('setup');
   const [unlockedTopics, setUnlockedTopics] = useState<string[]>([]);
   const [savedQuizQuestions, setSavedQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizVersion, setQuizVersion] = useState(0);
+
+  // Modo Kids / Modo Búho Sabio Gamificado
+  const [isKidsGameMode, setIsKidsGameMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('kids_game_mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [kidGems, setKidGems] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('kid_gems');
+      return saved ? parseInt(saved, 10) : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const handleToggleKidsMode = () => {
+    setIsKidsGameMode(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('kids_game_mode', String(next));
+      } catch (_) {}
+      if (next) owlAudio.playLevelUpChime();
+      return next;
+    });
+  };
+
+  const handleAddGems = (amount: number) => {
+    setKidGems(prev => {
+      const next = prev + amount;
+      try {
+        localStorage.setItem('kid_gems', String(next));
+      } catch (_) {}
+      return next;
+    });
+  };
 
   // Cuaderno Activo States
   const [activeStudyId, setActiveStudyId] = useState<string | null>(null);
@@ -1899,6 +1939,36 @@ export default function App() {
           </div>
         )}
 
+        {/* Toggle Modo Kids / Búho Sabio */}
+        <div className="mb-5 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-sky-500/10 to-emerald-500/10 border border-amber-400/30 flex items-center justify-between shrink-0 shadow-sm">
+          <div className="flex items-center gap-2.5">
+            <span className="text-2xl animate-bounce">🦉</span>
+            <div>
+              <span className="font-mono text-[9px] uppercase tracking-wider text-amber-300 font-bold block">
+                Modo Niños &bull; Juego
+              </span>
+              <span className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                <span>Búho Sabio</span>
+                {isKidsGameMode && (
+                  <span className="text-[10px] font-mono text-amber-300 bg-amber-400/20 px-1.5 py-0.5 rounded-full">
+                    💎 {kidGems}
+                  </span>
+                )}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={handleToggleKidsMode}
+            className={`px-2.5 py-1 rounded-xl text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer border ${
+              isKidsGameMode
+                ? 'bg-amber-400 text-black border-amber-300 shadow-md font-black'
+                : 'bg-white/5 text-neutral-400 border-white/10 hover:text-white'
+            }`}
+          >
+            {isKidsGameMode ? 'ON ✨' : 'OFF'}
+          </button>
+        </div>
+
         <span className="font-mono text-[9px] text-ink-muted uppercase tracking-widest block mb-4 shrink-0 font-bold">Modos de Estudio</span>
         <div className="space-y-3 shrink-0 mb-6">
           <button
@@ -1986,6 +2056,28 @@ export default function App() {
             </h4>
             <p className="text-[10px] text-ink-muted leading-relaxed">
               Tarjetas conceptuales guiadas vía voz.
+            </p>
+          </button>
+
+          <button
+            disabled={files.length === 0 && !studyText}
+            onClick={() => {
+              setViewMode('diagram');
+              setShowMobileSidebar(false);
+            }}
+            className={cn(
+              "w-full text-left p-4 xl:p-5 border transition-all duration-300 group cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed",
+              viewMode === 'diagram'
+                ? "border-amber-400 bg-amber-500/10 text-ink" 
+                : "border-white/5 hover:border-amber-400/40 bg-transparent text-white"
+            )}
+          >
+            <h4 className="font-mono font-bold text-[10px] tracking-wider uppercase mb-1 flex items-center gap-1.5 text-amber-300">
+              <span className={cn("w-1.5 h-1.5 rounded-full", viewMode === 'diagram' ? "bg-amber-400" : "bg-white/20")}></span>
+              [04] MAPA_CONCEPTUAL_VISUAL 🗺️
+            </h4>
+            <p className="text-[10px] text-ink-muted leading-relaxed">
+              Burbujas interactivas, analogías para chicos y retos con gemas.
             </p>
           </button>
 
@@ -2350,7 +2442,35 @@ export default function App() {
 
           {/* Floating Reader Action across all screens */}
           {(files.length > 0 || studyText) && (
-            <div className="sticky top-0 z-30 flex justify-end mb-4 pointer-events-none">
+            <div className="sticky top-0 z-30 flex items-center justify-end gap-2.5 mb-4 pointer-events-none flex-wrap">
+              {/* Pill de Modo Niños / Búho Sabio */}
+              <button
+                onClick={handleToggleKidsMode}
+                className={`pointer-events-auto px-3 py-1.5 rounded-xl border font-mono text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                  isKidsGameMode
+                    ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                    : 'bg-zinc-900/80 border-white/10 text-neutral-400 hover:text-white'
+                }`}
+                title="Modo Niños con el Búho Sabio"
+              >
+                <span>🦉</span>
+                <span>{isKidsGameMode ? `Búho Sabio (💎 ${kidGems})` : 'Modo Niños'}</span>
+              </button>
+
+              {/* Botón Acceso Rápido al Mapa */}
+              <button
+                onClick={() => setViewMode(viewMode === 'diagram' ? 'setup' : 'diagram')}
+                className={`pointer-events-auto px-3.5 py-2 border rounded-xl font-mono text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-2xl flex items-center gap-2 transition-all cursor-pointer ${
+                  viewMode === 'diagram'
+                    ? 'bg-amber-400 text-black border-amber-300 font-black'
+                    : 'bg-[#18181b]/90 hover:bg-amber-400/20 text-amber-300 border-amber-400/40'
+                }`}
+                title="Abrir o cerrar el Mapa Conceptual Interactivo"
+              >
+                <span>🗺️</span>
+                <span>{viewMode === 'diagram' ? 'Cerrar Mapa' : 'Mapa Conceptual'}</span>
+              </button>
+
               <button
                 onClick={() => handleOpenDocumentViewer()}
                 className="pointer-events-auto px-3.5 py-2 bg-[#18181b]/90 hover:bg-accent-systematic hover:text-black border border-accent-systematic/40 hover:border-accent-systematic text-white font-mono text-[10px] font-bold uppercase tracking-wider rounded-xl backdrop-blur-md shadow-2xl flex items-center gap-2 transition-all cursor-pointer group"
@@ -2833,6 +2953,24 @@ export default function App() {
                         Selecciona un tema clave sugerido y rinde un examen oral de 5 preguntas calificadas en tiempo real.
                       </p>
                     </button>
+
+                    {/* Method 5: Mapa Conceptual Visual Interactivo (Especial Niños) */}
+                    <button
+                      disabled={files.length === 0 && !studyText}
+                      onClick={() => setViewMode('diagram')}
+                      className="w-full text-left py-6 border-b border-white/5 hover:border-amber-400/40 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-300 group text-ink bg-transparent cursor-pointer"
+                    >
+                      <span className="font-mono text-[9px] text-amber-400 uppercase tracking-widest block mb-1 font-bold flex items-center justify-between">
+                        <span>05. Aprendizaje Visual &bull; Especial Niños</span>
+                        <span className="bg-amber-400 text-black px-1.5 py-0.5 rounded text-[8px] font-black">NUEVO</span>
+                      </span>
+                      <span className="font-display font-bold text-lg text-white group-hover:text-amber-300 transition-all block mb-1 uppercase flex items-center gap-2">
+                        <span>🗺️ Mapa Conceptual y Retos del Búho</span>
+                      </span>
+                      <p className="text-ink-muted text-xs leading-relaxed">
+                        Explora burbujas de conceptos interactivos con analogías para chicos, curiosidades y desafíos con gemas.
+                      </p>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2897,6 +3035,24 @@ export default function App() {
                   Iniciar Cuestionario por Voz
                 </button>
               </div>
+            </motion.div>
+          )}
+
+          {viewMode === 'diagram' && (
+            <motion.div
+              key="diagram"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              className="max-w-6xl mx-auto w-full p-2 md:p-6"
+            >
+              <InteractiveDiagram
+                studyText={studyText}
+                activeTitle={activeStudyTitle || (files[0]?.name?.replace(/\.[^/.]+$/, '')) || 'Cuaderno de Estudio'}
+                isKidsMode={isKidsGameMode}
+                onBack={() => setViewMode('setup')}
+                onAddGems={handleAddGems}
+              />
             </motion.div>
           )}
 

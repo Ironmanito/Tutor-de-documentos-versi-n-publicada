@@ -2303,6 +2303,207 @@ ${cleanText.substring(0, 50000)}`,
   }
 });
 
+// Endpoint: Generación de Mapa Conceptual / Diagrama Interactivo para Niños y Estudio Visual
+app.post("/api/generate-diagram", async (req, res) => {
+  const { studyText, title } = req.body;
+  if (!studyText || !studyText.trim()) {
+    return res.status(400).json({ error: "Falta el texto de estudio para generar el diagrama." });
+  }
+
+  const customKey = req.headers['x-gemini-api-key'] as string | undefined;
+  const cleanText = cleanStudyTextForAnalysis(studyText);
+
+  try {
+    const ai = getAiClient(customKey);
+    const response = await generateContentWithFallback(ai, {
+      contents: `Transforma el contenido académico de este documento en un MAPA CONCEPTUAL / DIAGRAMA VISUAL INTERACTIVO altamente pedagógico, diseñado para facilitar la comprensión y retención de un estudiante (especialmente visual o joven).
+
+REGLAS:
+1. Crea un nodo central que resuma la idea principal del tema.
+2. Identifica entre 4 y 7 nodos secundarios conectados (conceptos clave, causas, efectos, procesos o ejemplos).
+3. Cada nodo debe incluir:
+   - "label": Título corto y claro (2 a 4 palabras).
+   - "emoji": Un emoji representativo y divertido (ej. ⚡, 💧, 🏛️, 🧠, ☀️, 🚀, 🧪, 🌿).
+   - "shortDesc": Explicación concisa y formal (1 a 2 oraciones).
+   - "kidExplanation": Explicación con una analogía simple de la vida diaria ("Imagina que...").
+   - "funFact": Un dato curioso o '¿Sabías que...?' que llame la atención.
+   - "category": 'central' | 'clave' | 'proceso' | 'ejemplo' | 'dato'
+   - "color": Uno de estos colores temáticos: '#10b981' (verde), '#38bdf8' (azul cielo), '#fbbf24' (ámbar), '#a855f7' (púrpura), '#f43f5e' (rosa), '#f97316' (naranja).
+4. Define las conexiones ("connections") con una etiqueta ("label") que explique la relación (ej. "provoca", "se divide en", "necesita", "produce", "ejemplo de").
+5. Opcional: Para cada nodo agrega un "quickQuiz": { "question": "¿...?", "options": ["A", "B", "C"], "correctIndex": 0, "hint": "Pista del Búho..." } para que el alumno pueda ganar gemas interactivas al tocar el nodo.
+
+Título del cuaderno o tema: ${title || 'Contenido de Estudio'}
+Texto:
+${cleanText.substring(0, 45000)}`,
+      config: {
+        systemInstruction: "Eres un pedagogo experto en aprendizaje visual e infografías educativas. Diseña mapas conceptuales claros, estimulantes y visuales con analogías divertidas y datos curiosos.",
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            centralTopic: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                label: { type: Type.STRING },
+                emoji: { type: Type.STRING },
+                summary: { type: Type.STRING },
+                kidExample: { type: Type.STRING }
+              },
+              required: ['id', 'label', 'emoji', 'summary']
+            },
+            nodes: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  label: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  shortDesc: { type: Type.STRING },
+                  kidExplanation: { type: Type.STRING },
+                  funFact: { type: Type.STRING },
+                  emoji: { type: Type.STRING },
+                  color: { type: Type.STRING },
+                  parentId: { type: Type.STRING },
+                  quickQuiz: {
+                    type: Type.OBJECT,
+                    properties: {
+                      question: { type: Type.STRING },
+                      options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      correctIndex: { type: Type.INTEGER },
+                      hint: { type: Type.STRING }
+                    },
+                    required: ['question', 'options', 'correctIndex']
+                  }
+                },
+                required: ['id', 'label', 'shortDesc', 'kidExplanation', 'emoji']
+              }
+            },
+            connections: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  from: { type: Type.STRING },
+                  to: { type: Type.STRING },
+                  label: { type: Type.STRING }
+                },
+                required: ['from', 'to', 'label']
+              }
+            }
+          },
+          required: ['centralTopic', 'nodes', 'connections']
+        }
+      }
+    });
+
+    const cleanResult = cleanJsonText(response.text || '');
+    return res.json({ diagram: JSON.parse(cleanResult) });
+  } catch (error: any) {
+    console.warn("[Server Diagram Fallback] Usando generador local de mapa conceptual:", error.message || error);
+    const fallbackDiagram = generateFallbackDiagram(cleanText, title);
+    return res.json({ diagram: fallbackDiagram });
+  }
+});
+
+function generateFallbackDiagram(text: string, title?: string) {
+  const words = text.split(/\s+/).filter(w => w.length > 5);
+  const sampleWords = Array.from(new Set(words.map(w => w.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, '')))).slice(0, 15);
+  const mainTitle = title || (sampleWords[0] ? `Estudio de ${sampleWords[0]}` : "Tema Principal");
+
+  const colors = ['#10b981', '#38bdf8', '#fbbf24', '#a855f7', '#f43f5e', '#f97316'];
+  const emojis = ['🧠', '⚡', '🌱', '🔍', '🚀', '💡'];
+
+  const nodes = [
+    {
+      id: "node_1",
+      label: sampleWords[1] ? sampleWords[1].toUpperCase() : "Concepto Base",
+      category: "clave",
+      shortDesc: "Idea fundamental y punto de partida del tema.",
+      kidExplanation: "Imagina que es como los cimientos de una casa: sin esto, nada de lo demás se sostendría.",
+      funFact: "Los conceptos base son como bloques de Lego: uniéndolos puedes construir cualquier idea.",
+      emoji: emojis[0],
+      color: colors[0],
+      parentId: "central",
+      quickQuiz: {
+        question: "¿Cuál es la función del concepto base?",
+        options: ["Sostener todas las demás ideas", "Decorar el texto", "No tiene importancia"],
+        correctIndex: 0,
+        hint: "Recuerda el ejemplo de los cimientos de una casa."
+      }
+    },
+    {
+      id: "node_2",
+      label: sampleWords[2] ? sampleWords[2].toUpperCase() : "Proceso Activo",
+      category: "proceso",
+      shortDesc: "Cómo interactúan los elementos y qué pasos ocurren en orden.",
+      kidExplanation: "Es como una receta de cocina: primero un paso, luego el otro, y al final tenemos el resultado.",
+      funFact: "En la naturaleza y en las ciencias, casi todo ocurre a través de procesos paso a paso.",
+      emoji: emojis[1],
+      color: colors[1],
+      parentId: "central",
+      quickQuiz: {
+        question: "¿A qué se parece un proceso?",
+        options: ["A una foto fija", "A una receta con pasos ordenados", "A un juego sin reglas"],
+        correctIndex: 1,
+        hint: "Pensá en cómo se prepara algo paso a paso."
+      }
+    },
+    {
+      id: "node_3",
+      label: sampleWords[3] ? sampleWords[3].toUpperCase() : "Causa y Efecto",
+      category: "clave",
+      shortDesc: "Qué dispara los fenómenos y qué consecuencias genera.",
+      kidExplanation: "Como una fila de fichas de dominó: empujas una y caen todas las demás.",
+      funFact: "Cada acción en el universo produce una reacción, ¡incluso en cómo pensamos!",
+      emoji: emojis[2],
+      color: colors[2],
+      parentId: "node_2",
+      quickQuiz: {
+        question: "Cuando ocurre una causa, ¿qué suele pasar?",
+        options: ["Produce un efecto o consecuencia", "Nada cambia", "Desaparece el fenómeno"],
+        correctIndex: 0,
+        hint: "Pensá en las fichas de dominó que caen en cadena."
+      }
+    },
+    {
+      id: "node_4",
+      label: sampleWords[4] ? sampleWords[4].toUpperCase() : "Aplicación Diaria",
+      category: "ejemplo",
+      shortDesc: "Dónde vemos este conocimiento en el mundo real que nos rodea.",
+      kidExplanation: "Es lo que te ayuda a entender por qué las cosas funcionan así en tu casa o en la escuela.",
+      funFact: "Todo lo que inventamos los seres humanos empezó como una pregunta curiosa en un apunte.",
+      emoji: emojis[3],
+      color: colors[3],
+      parentId: "node_1",
+      quickQuiz: {
+        question: "¿Para qué sirve aprender este tema?",
+        options: ["Para entender el mundo real y resolver problemas", "Solo para memorizar", "Para nada"],
+        correctIndex: 0,
+        hint: "El Búho dice: ¡El saber es una superherramienta para la vida real!"
+      }
+    }
+  ];
+
+  return {
+    centralTopic: {
+      id: "central",
+      label: mainTitle,
+      emoji: "🦉",
+      summary: "Mapa visual organizado para explorar ideas paso a paso.",
+      kidExample: "Imagina un árbol: el tronco es este tema y las ramas son los descubrimientos que vas a hacer."
+    },
+    nodes,
+    connections: [
+      { from: "central", to: "node_1", label: "se fundamenta en" },
+      { from: "central", to: "node_2", label: "funciona mediante" },
+      { from: "node_2", to: "node_3", label: "genera" },
+      { from: "node_1", to: "node_4", label: "se aplica en" }
+    ]
+  };
+}
+
 app.post("/api/generate-oral-topics", async (req, res) => {
   const { studyText, excludeTitles } = req.body;
   if (!studyText || !studyText.trim()) {
