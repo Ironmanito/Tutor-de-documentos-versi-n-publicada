@@ -106,26 +106,35 @@ export const owlAudio = new OwlAudioSynth();
 // ==========================================
 export const ConfettiCanvas: React.FC<{ active: boolean; onComplete?: () => void }> = ({ active, onComplete }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
-    if (!active || !canvasRef.current) return;
+    if (!active) return;
+
+    // Timer de seguridad estricto para nunca quedar en bucle
+    const safetyTimer = setTimeout(() => {
+      if (onCompleteRef.current) onCompleteRef.current();
+    }, 1200);
+
     const canvas = canvasRef.current;
+    if (!canvas) return () => clearTimeout(safetyTimer);
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return () => clearTimeout(safetyTimer);
 
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
     const colors = ['#fbbf24', '#38bdf8', '#10b981', '#f43f5e', '#a855f7', '#fb7185', '#fde047'];
-    const particles = Array.from({ length: 90 }).map(() => ({
+    const particles = Array.from({ length: 50 }).map(() => ({
       x: window.innerWidth / 2 + (Math.random() - 0.5) * 200,
-      y: window.innerHeight * 0.4,
-      vx: (Math.random() - 0.5) * 16,
-      vy: (Math.random() - 0.9) * 14,
-      size: Math.random() * 8 + 4,
+      y: window.innerHeight * 0.35,
+      vx: (Math.random() - 0.5) * 12,
+      vy: (Math.random() - 0.8) * 11,
+      size: Math.random() * 6 + 3,
       color: colors[Math.floor(Math.random() * colors.length)],
       rotation: Math.random() * 360,
-      vRot: (Math.random() - 0.5) * 12,
+      vRot: (Math.random() - 0.5) * 10,
       opacity: 1
     }));
 
@@ -140,9 +149,9 @@ export const ConfettiCanvas: React.FC<{ active: boolean; onComplete?: () => void
       particles.forEach(p => {
         p.x += p.vx;
         p.y += p.vy;
-        p.vy += 0.35; // Gravedad
+        p.vy += 0.4;
         p.rotation += p.vRot;
-        p.opacity = Math.max(0, p.opacity - 0.012);
+        p.opacity = Math.max(0, p.opacity - 0.025); // Desvanecimiento rápido
 
         if (p.opacity > 0 && p.y < canvas.height) {
           alive = true;
@@ -156,20 +165,25 @@ export const ConfettiCanvas: React.FC<{ active: boolean; onComplete?: () => void
         }
       });
 
-      if (alive && frames < 140) {
+      if (alive && frames < 50) {
         animationId = requestAnimationFrame(loop);
       } else {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (onComplete) onComplete();
+        if (onCompleteRef.current) onCompleteRef.current();
       }
     };
 
     animationId = requestAnimationFrame(loop);
 
     return () => {
+      clearTimeout(safetyTimer);
       cancelAnimationFrame(animationId);
+      if (canvasRef.current) {
+        const c = canvasRef.current.getContext('2d');
+        if (c) c.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
     };
-  }, [active, onComplete]);
+  }, [active]);
 
   if (!active) return null;
 

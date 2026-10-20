@@ -422,7 +422,6 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
 
     if (correct) {
       owlAudio.playSuccessChime();
-      setShowConfetti(true);
       setOwlMood('celebrating');
       setOwlSpeech('¡Excelente retención! 🎯 Has fijado el concepto clave con precisión (+5 💎).');
       onAddGems?.(5);
@@ -435,6 +434,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   };
 
   const handleNextCapsule = () => {
+    setShowConfetti(false);
     if (currentCapsuleIndex < microCapsules.length - 1) {
       setCurrentCapsuleIndex(prev => prev + 1);
       setSelectedOption(null);
