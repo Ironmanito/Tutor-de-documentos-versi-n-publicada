@@ -18,6 +18,7 @@ import { UploadProgressAnimation, FileProgressItem } from './components/UploadPr
 import { trackUserActivity, trackUserAction, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
 import { DocumentViewer } from './components/DocumentViewer';
 import { ConsentModal } from './components/ConsentModal';
+import { InteractiveTourModal } from './components/InteractiveTourModal';
 import { telemetry } from './lib/telemetry';
 import { InteractiveDiagram } from './components/InteractiveDiagram';
 import { WiseOwlAvatar, owlAudio } from './components/WiseOwlAvatar';
@@ -251,6 +252,15 @@ export default function App() {
       return next;
     });
   };
+
+  // Tour Interactivo y Tutorial con Archie
+  const [showTourModal, setShowTourModal] = useState<boolean>(() => {
+    try {
+      return !localStorage.getItem('has_seen_tour');
+    } catch {
+      return false;
+    }
+  });
 
   // Cuaderno Activo States
   const [activeStudyId, setActiveStudyId] = useState<string | null>(null);
@@ -2609,6 +2619,16 @@ export default function App() {
               >
                 <BookOpen className="w-4 h-4 text-accent-systematic group-hover:text-black transition-colors" />
                 <span>📖 Lector de Apuntes</span>
+              </button>
+
+              {/* Botón de Tutorial Guiado */}
+              <button
+                onClick={() => setShowTourModal(true)}
+                className="pointer-events-auto px-3.5 py-2 bg-gradient-to-r from-amber-500/20 to-purple-500/20 hover:from-amber-500/30 hover:to-purple-500/30 border border-amber-400/40 text-amber-200 font-mono text-[10px] font-bold uppercase tracking-wider rounded-xl backdrop-blur-md shadow-lg flex items-center gap-1.5 transition-all cursor-pointer"
+                title="Ver Tutorial Interactivo de la aplicación"
+              >
+                <span>🎬</span>
+                <span>Tutorial</span>
               </button>
             </div>
           )}
@@ -5401,6 +5421,15 @@ app.post('/api/create-checkout', async (req, res) => {
           setUserTier('pro');
           showToast('success', '¡Plan PRO Activado!', 'Has obtenido el plan PRO 100% bonificado con acceso ilimitado.');
         }}
+      />
+
+      {/* MODAL DE TUTORIAL INTERACTIVO CON ARCHIE */}
+      <InteractiveTourModal
+        isOpen={showTourModal}
+        onClose={() => setShowTourModal(false)}
+        onAddGems={handleAddGems}
+        onOpenDocumentViewer={() => handleOpenDocumentViewer()}
+        onOpenDiagram={() => handleTriggerDiagram(gameDifficulty)}
       />
     </div>
   );
