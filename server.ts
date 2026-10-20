@@ -2429,6 +2429,58 @@ ${cleanText.substring(0, 10000)}`,
   }
 });
 
+// Endpoint: Síntesis de voz hiper-natural de Archie con el motor de audio de Gemini Live (Zephyr)
+app.post("/api/speak-live", async (req, res) => {
+  const { text, voiceName = "Zephyr" } = req.body;
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: "Falta el texto a vocalizar." });
+  }
+
+  const customKey = req.headers['x-gemini-api-key'] as string | undefined;
+
+  try {
+    const ai = getAiClient(customKey);
+    const audioModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+    let lastErr: any = null;
+
+    for (const model of audioModels) {
+      try {
+        const response: any = await withRetry(() => ai.models.generateContent({
+          model,
+          contents: `Habla en español latinoamericano con tono cálido, empático, natural, pedagógico y muy humano. Di únicamente lo siguiente sin agregar saludos ni introducciones adicionales: "${text.trim()}"`,
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: voiceName || "Zephyr"
+                }
+              }
+            }
+          }
+        }), 2, 800);
+
+        const candidate = response.candidates?.[0];
+        const audioPart = candidate?.content?.parts?.find((p: any) => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
+        if (audioPart && audioPart.inlineData?.data) {
+          return res.json({
+            audioPcmBase64: audioPart.inlineData.data,
+            mimeType: audioPart.inlineData.mimeType || 'audio/pcm;rate=24000',
+            voice: voiceName
+          });
+        }
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`[Speak-Live] Falló modelo ${model} para audio:`, err?.message || err);
+      }
+    }
+    throw lastErr || new Error("No se pudo sintetizar voz con los modelos Gemini");
+  } catch (error: any) {
+    console.warn("[Speak-Live Error]:", error.message || error);
+    return res.status(500).json({ error: error.message || "Error al sintetizar voz" });
+  }
+});
+
 function generateFallbackDiagram(text: string, title?: string, difficulty: string = 'medio') {
   const words = text.split(/\s+/).filter(w => w.length > 5);
   const sampleWords = Array.from(new Set(words.map(w => w.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, '')))).slice(0, 15);

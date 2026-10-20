@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, ChevronRight, ChevronLeft, Volume2, VolumeX, Sparkles, 
-  BookOpen, Target, Compass, Mic, Mail, Award, CheckCircle2, Play
+  BookOpen, Target, Compass, Mic, Mail, Award, CheckCircle2, Loader2
 } from 'lucide-react';
 import { WiseOwlAvatar, OwlMood, owlAudio, ConfettiCanvas } from './WiseOwlAvatar';
+import { AudioStreamPlayer } from '../lib/audio';
 
 interface TourStep {
   id: number;
@@ -34,12 +35,12 @@ interface InteractiveTourModalProps {
 const TOUR_STEPS: TourStep[] = [
   {
     id: 0,
-    badge: "01. BIENVENIDA Y FILOSOFÍA",
+    badge: "01. BIENVENIDA Y TEORÍA SOCIAL",
     title: "Aprende Más en Menos Tiempo",
     subtitle: "Tutor Académico con Inteligencia Artificial y Active Recall",
-    description: "Olvídate de leer pasivamente páginas interminables de apuntes sin retener los conceptos. Esta plataforma convierte cualquier documento en una experiencia guiada de alta retención.",
+    description: "Olvídate de leer pasivamente páginas interminables de apuntes de Teoría Social sin retener los paradigmas sociológicos. Esta plataforma convierte cualquier texto en una experiencia guiada de alta retención.",
     owlMood: "happy",
-    owlSpeech: "¡Hola! Soy Archie, tu mentor pedagógico. Te mostraré en 60 segundos cómo dominar cualquier materia con retención garantizada.",
+    owlSpeech: "¡Hola! Soy Archie, tu mentor pedagógico. Te mostraré en 60 segundos cómo dominar Teoría Social y cualquier materia universitaria con retención garantizada.",
     icon: <Sparkles className="w-6 h-6 text-amber-400" />,
     accentColor: "border-amber-400/40 text-amber-300",
     previewCard: {
@@ -57,17 +58,17 @@ const TOUR_STEPS: TourStep[] = [
     badge: "02. CARGA MULTIMODAL",
     title: "Sube Cualquier Formato",
     subtitle: "PDF, Word, Fotos de Cuadernos, PowerPoint y Google Docs",
-    description: "Arrastra archivos o saca fotos de tus apuntes manuscritos. El motor OCR inteligente procesa y estructura el texto al instante, organizando tus cuadernos de estudio.",
+    description: "Arrastra archivos de cátedra o saca fotos de tus notas manuscritas de Teoría Social. El motor OCR inteligente procesa y estructura el texto al instante, organizando tus cuadernos de estudio.",
     owlMood: "explaining" as OwlMood,
-    owlSpeech: "Puedes subir PDFs de 100 páginas, diapositivas de clases o fotos de tu carpeta. La IA ordenará los temas clave automáticamente.",
+    owlSpeech: "Puedes subir textos de Durkheim, Weber o Marx, diapositivas de clases o fotos de tu carpeta. La IA ordenará los conceptos clave automáticamente.",
     icon: <BookOpen className="w-6 h-6 text-sky-400" />,
     accentColor: "border-sky-400/40 text-sky-300",
     previewCard: {
       title: "Formatos Soportados",
       items: [
-        "📄 Documentos PDF, Word (.docx) y texto plano.",
-        "🖼️ Fotos de cuadernos con extracción óptica OCR.",
-        "📊 Presentaciones PowerPoint (.pptx) con imágenes originales.",
+        "📄 Documentos PDF, Word (.docx) y textos de Teoría Social.",
+        "🖼️ Fotos de apuntes y carpetas con extracción óptica OCR.",
+        "📊 Presentaciones PowerPoint (.pptx) con esquemas teóricos.",
         "☁️ Importación directa desde enlaces de Google Drive y Docs."
       ],
       highlight: "Tus documentos se guardan localmente para acceder sin conexión."
@@ -78,17 +79,17 @@ const TOUR_STEPS: TourStep[] = [
     badge: "03. MICROLECTURAS & CHECKPOINTS",
     title: "Adiós al Scroll Compulsivo",
     subtitle: "Puntos de Control Cognitivo Obligatorios",
-    description: "El mayor enemigo del estudio es el scroll acelerado sin lectura. El sistema fragmenta el material en micro-cápsulas de 2 minutos que exigen responder un checkpoint antes de avanzar.",
+    description: "El mayor enemigo del estudio es el scroll acelerado sin lectura. El sistema fragmenta el material de Teoría Social en micro-cápsulas de 2 minutos que exigen responder un checkpoint antes de avanzar.",
     owlMood: "thinking",
-    owlSpeech: "Dividimos el texto en bocados digeribles. Al terminar cada fragmento, verificamos tu comprensión activa para sumar gemas 💎.",
+    owlSpeech: "Dividimos autores como Marx y Weber en bocados digeribles. Al terminar cada fragmento, verificamos tu comprensión activa para sumar gemas 💎.",
     icon: <Target className="w-6 h-6 text-emerald-400" />,
     accentColor: "border-emerald-400/40 text-emerald-300",
     previewCard: {
       title: "Mecanismo de Retención Activa",
       items: [
         "🎯 Cápsulas breves de 100 a 200 palabras según la dificultad.",
-        "⏱️ Guarda anti-skimming: exige unos segundos mínimos de asimilación.",
-        "❓ Pregunta relámpago de causa-efecto al pie de cada cápsula.",
+        "⏱️ Guarda anti-skimming: exige asimilación real de conceptos.",
+        "❓ Pregunta relámpago de causa-efecto (ej. acción social o burocracia).",
         "💎 +5 Gemas al superar cada hito y desbloquear el siguiente bloque."
       ],
       highlight: "Aumenta la comprensión lectora hasta un 85%."
@@ -99,17 +100,17 @@ const TOUR_STEPS: TourStep[] = [
     badge: "04. MAPA CONCEPTUAL EN 2DO PLANO",
     title: "Visualiza Relaciones Lógicas",
     subtitle: "Generación Asíncrona con Niveles Fácil, Medio y Difícil",
-    description: "Explora un árbol visual interactivo con las variables nucleares y analogías prácticas de la vida real. Y lo mejor: se genera en segundo plano mientras tú sigues leyendo tus notas.",
+    description: "Explora un árbol visual interactivo con variables sociológicas, instituciones y analogías prácticas del mundo real. Y lo mejor: se genera en segundo plano mientras tú sigues leyendo tus apuntes.",
     owlMood: "happy",
-    owlSpeech: "Tocas 'Generar Mapa' y sigues leyendo tus apuntes. Apenas termina, una notificación con sonido te avisa para que entres a explorarlo.",
+    owlSpeech: "Tocas 'Generar Mapa' de Teoría Social y sigues leyendo. Apenas termina en segundo plano, te avisamos con sonido para explorarlo.",
     icon: <Compass className="w-6 h-6 text-amber-400" />,
     accentColor: "border-amber-400/40 text-amber-300",
     previewCard: {
       title: "Exploración de Nodos",
       items: [
-        "🗺️ Nodos conectados con etiquetas de relación causal.",
-        "💡 Analogías de la vida práctica ('En la práctica, funciona como...').",
-        "🎯 Mini-quiz activo en cada nodo para fijar el concepto.",
+        "🗺️ Nodos conectados: Hechos Sociales, Poder, Acción y Estructuras.",
+        "💡 Analogías prácticas para entender paradigmas complejos.",
+        "🎯 Mini-quiz activo en cada nodo para fijar la teoría.",
         "⚡ Selector de rigor académico: Fácil | Medio | Difícil."
       ],
       highlight: "Caché instantánea: abre en 0 ms una vez generado."
@@ -120,17 +121,17 @@ const TOUR_STEPS: TourStep[] = [
     badge: "05. EVALUACIÓN ORAL Y VOZ",
     title: "Rinde Exámenes por Voz",
     subtitle: "Feedback Pedagógico Inmediato",
-    description: "Practica defendiendo los temas oralmente con el micrófono. Archie escucha tu respuesta, evalúa la precisión técnica y te califica del 1 al 10 en tiempo real.",
+    description: "Practica defendiendo los temas oralmente con el micrófono. Archie escucha tu explicación de las teorías sociológicas, evalúa la precisión conceptual y te califica del 1 al 10 en tiempo real.",
     owlMood: "explaining" as OwlMood,
-    owlSpeech: "Habla con naturalidad respondiendo a mis 5 preguntas temáticas. Te daré consejos precisos para rendir con seguridad en la facultad o colegio.",
+    owlSpeech: "Habla con naturalidad respondiendo a mis preguntas de examen oral. Te daré consejos precisos para rendir con seguridad en tus mesas universitarias.",
     icon: <Mic className="w-6 h-6 text-purple-400" />,
     accentColor: "border-purple-400/40 text-purple-300",
     previewCard: {
       title: "Simulación de Examen",
       items: [
         "🎙️ Reconocimiento de voz fluido y transcripción en directo.",
-        "📐 Calificación inmediata con devolución personalizada por la IA.",
-        "📈 Medición de seguridad, titubeos y latencia de respuesta.",
+        "📐 Calificación inmediata con devolución conceptual rigurosa.",
+        "📈 Medición de seguridad, titubeos y dominio de la materia.",
         "🔄 5 preguntas por tema con nivel de dificultad graduable."
       ],
       highlight: "Pierde el miedo escénico antes de rendir frente al docente."
@@ -141,7 +142,7 @@ const TOUR_STEPS: TourStep[] = [
     badge: "06. REPORTE AUTOMÁTICO POR CORREO",
     title: "Métricas y Análisis Conductual",
     subtitle: "Informe Detallado Directo a tu Casilla",
-    description: "Al finalizar cada sesión o cerrar el estudio, el sistema emite automáticamente un informe exhaustivo con el progreso, tiempo de lectura real, fatiga y recomendaciones psicopedagógicas.",
+    description: "Al finalizar cada sesión de estudio, el sistema emite automáticamente un informe exhaustivo con el progreso, tiempo de lectura real, fatiga y recomendaciones psicopedagógicas.",
     owlMood: "happy",
     owlSpeech: "Configuras tu correo una sola vez y recibirás el diagnóstico psicopedagógico completo de cada sesión para monitorear tu evolución.",
     icon: <Mail className="w-6 h-6 text-rose-400" />,
@@ -154,7 +155,7 @@ const TOUR_STEPS: TourStep[] = [
         "🎯 Precisión en checkpoints y exámenes orales.",
         "💡 Consejos de estudio personalizados redactados por la IA."
       ],
-      highlight: "Ideal para seguimiento propio o para padres y tutores."
+      highlight: "Ideal para seguimiento propio o para docentes y tutores."
     }
   },
   {
@@ -164,13 +165,13 @@ const TOUR_STEPS: TourStep[] = [
     subtitle: "Tienes las herramientas para aprender sin límites",
     description: "Has completado la inducción guiada del Tutor Académico. Para premiar tu interés, te obsequiamos tus primeras gemas de recompensa.",
     owlMood: "celebrating",
-    owlSpeech: "¡Felicitaciones! Has recibido +15 Gemas 💎 de bienvenida. ¡Carga un apunte o selecciona un cuaderno para comenzar tu sesión!",
+    owlSpeech: "¡Felicitaciones! Has recibido +15 Gemas 💎 de bienvenida. ¡Abre tu apunte de Teoría Social o sube tus textos para comenzar tu sesión!",
     icon: <Award className="w-6 h-6 text-amber-400" />,
     accentColor: "border-amber-400/40 text-amber-300",
     previewCard: {
       title: "Tus Próximos Pasos",
       items: [
-        "1. Selecciona un cuaderno o sube tu primer documento.",
+        "1. Selecciona tu cuaderno de Teoría Social o sube un documento.",
         "2. Lee con las microlecturas guiadas para activar tu memoria.",
         "3. Revisa el mapa conceptual interactivo y rinde una evaluación oral.",
         "4. ¡Disfruta aprendiendo con Archie como tu mentor!"
@@ -191,63 +192,153 @@ export const InteractiveTourModal: React.FC<InteractiveTourModalProps> = ({
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [showConfetti, setShowConfetti] = useState(false);
   const [hasAwardedGems, setHasAwardedGems] = useState(false);
-  const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const [isLoadingVoice, setIsLoadingVoice] = useState(false);
+  const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+
+  const playerRef = useRef<AudioStreamPlayer | null>(null);
+  const audioCacheRef = useRef<Record<number, string>>({});
+  const activeStepRef = useRef<number>(0);
+  const voiceEnabledRef = useRef<boolean>(true);
+
+  activeStepRef.current = currentStep;
+  voiceEnabledRef.current = voiceEnabled;
 
   const step = TOUR_STEPS[currentStep] || TOUR_STEPS[0];
 
-  // Locución sintetizada con Web Speech API
-  const speakCurrentStep = (text: string) => {
-    if (!voiceEnabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  // Inicializar reproductor de audio PCM 24kHz
+  const getPlayer = () => {
+    if (!playerRef.current) {
+      playerRef.current = new AudioStreamPlayer(24000);
+    }
+    return playerRef.current;
+  };
+
+  // Pre-cargar audio de pasos siguientes en segundo plano
+  const prefetchStepAudio = async (stepIndex: number) => {
+    if (stepIndex >= TOUR_STEPS.length || audioCacheRef.current[stepIndex]) return;
     try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'es-ES';
-      utterance.rate = 1.05;
-      utterance.pitch = 1.08; // Tono cálido y amigable
-      synthRef.current = utterance;
-      window.speechSynthesis.speak(utterance);
+      const text = TOUR_STEPS[stepIndex].owlSpeech;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const savedKey = typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') : null;
+      if (savedKey) headers["x-gemini-api-key"] = savedKey;
+
+      const res = await fetch('/api/speak-live', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, voiceName: 'Zephyr' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audioPcmBase64) {
+          audioCacheRef.current[stepIndex] = data.audioPcmBase64;
+        }
+      }
     } catch (_) {}
+  };
+
+  // Reproducir locución de Archie con el motor de voz Live (Zephyr)
+  const speakCurrentStepLive = async (stepIndex: number) => {
+    const player = getPlayer();
+    player.interrupt();
+    setIsPlayingVoice(false);
+
+    if (!voiceEnabledRef.current) return;
+
+    // Si ya está en caché, reproducir al instante
+    const cached = audioCacheRef.current[stepIndex];
+    if (cached) {
+      setIsLoadingVoice(false);
+      player.addPCM16(cached);
+      setIsPlayingVoice(true);
+      // Pre-cargar el siguiente paso
+      prefetchStepAudio(stepIndex + 1);
+      return;
+    }
+
+    setIsLoadingVoice(true);
+    try {
+      const text = TOUR_STEPS[stepIndex].owlSpeech;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const savedKey = typeof window !== 'undefined' ? localStorage.getItem('user_gemini_api_key') : null;
+      if (savedKey) headers["x-gemini-api-key"] = savedKey;
+
+      const res = await fetch('/api/speak-live', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, voiceName: 'Zephyr' })
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.audioPcmBase64) {
+        audioCacheRef.current[stepIndex] = data.audioPcmBase64;
+        // Solo reproducir si el usuario aún se encuentra en este paso y la voz sigue activa
+        if (activeStepRef.current === stepIndex && voiceEnabledRef.current) {
+          player.interrupt();
+          player.addPCM16(data.audioPcmBase64);
+          setIsPlayingVoice(true);
+        }
+      }
+    } catch (err) {
+      console.warn("[InteractiveTourModal] Error al obtener voz Live de Gemini:", err);
+    } finally {
+      if (activeStepRef.current === stepIndex) {
+        setIsLoadingVoice(false);
+      }
+      // Pre-cargar el paso siguiente de forma preventiva
+      prefetchStepAudio(stepIndex + 1);
+    }
   };
 
   useEffect(() => {
     if (!isOpen) {
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      playerRef.current?.stop();
+      setIsPlayingVoice(false);
+      setIsLoadingVoice(false);
+      setShowConfetti(false);
       return;
     }
 
-    // Efecto de sonido del búho
+    // Efecto de campana según el avance
     if (currentStep === 0) {
       owlAudio.playLevelUpChime();
     } else if (currentStep === TOUR_STEPS.length - 1) {
       owlAudio.playLevelUpChime();
       setShowConfetti(true);
+      // Detener confeti a los 3.5 segundos para no invadir la lectura
+      const timer = setTimeout(() => setShowConfetti(false), 3500);
       if (!hasAwardedGems) {
         onAddGems?.(15);
         setHasAwardedGems(true);
       }
+      return () => clearTimeout(timer);
     } else {
       owlAudio.playEncouragementChime();
     }
 
-    // Hablar el texto de Archie
-    speakCurrentStep(step.owlSpeech);
+    // Disparar voz Live de Gemini
+    speakCurrentStepLive(currentStep);
 
     return () => {
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      playerRef.current?.interrupt();
+      setIsPlayingVoice(false);
     };
   }, [isOpen, currentStep]);
 
   const toggleVoice = () => {
     const next = !voiceEnabled;
     setVoiceEnabled(next);
-    if (!next && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    } else if (next) {
-      speakCurrentStep(step.owlSpeech);
+    voiceEnabledRef.current = next;
+
+    if (!next) {
+      playerRef.current?.interrupt();
+      setIsPlayingVoice(false);
+      setIsLoadingVoice(false);
+    } else {
+      speakCurrentStepLive(currentStep);
     }
   };
 
@@ -266,6 +357,10 @@ export const InteractiveTourModal: React.FC<InteractiveTourModalProps> = ({
   };
 
   const handleFinish = () => {
+    playerRef.current?.stop();
+    setIsPlayingVoice(false);
+    setIsLoadingVoice(false);
+    setShowConfetti(false);
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem('has_seen_tour', 'true');
@@ -304,14 +399,24 @@ export const InteractiveTourModal: React.FC<InteractiveTourModalProps> = ({
                 <span className="font-mono text-[9px] uppercase tracking-wider text-amber-400 font-bold block">
                   Tutorial Interactivo &bull; Conoce a tu Tutor
                 </span>
-                <h3 className="text-sm sm:text-base font-bold text-white">
-                  Paso {currentStep + 1} de {TOUR_STEPS.length}
+                <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                  <span>Paso {currentStep + 1} de {TOUR_STEPS.length}</span>
+                  {isLoadingVoice && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-mono text-amber-300 font-normal px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-400/20">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Conectando voz Live...
+                    </span>
+                  )}
+                  {isPlayingVoice && !isLoadingVoice && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Voz Live: Zephyr
+                    </span>
+                  )}
                 </h3>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Botón Silenciar / Activar Voz */}
+              {/* Botón Silenciar / Activar Voz Live */}
               <button
                 type="button"
                 onClick={toggleVoice}
@@ -320,11 +425,11 @@ export const InteractiveTourModal: React.FC<InteractiveTourModalProps> = ({
                     ? 'bg-amber-400/20 border-amber-400 text-amber-300'
                     : 'bg-white/5 border-white/10 text-neutral-400 hover:text-white'
                 }`}
-                title={voiceEnabled ? 'Silenciar voz de Archie' : 'Activar voz de Archie'}
+                title={voiceEnabled ? 'Silenciar voz Live de Archie' : 'Activar voz Live de Archie (Zephyr)'}
               >
                 {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
                 <span className="hidden sm:inline text-[10px] font-bold uppercase">
-                  {voiceEnabled ? 'Voz Activada' : 'Mudo'}
+                  {voiceEnabled ? 'Voz Live' : 'Mudo'}
                 </span>
               </button>
 
@@ -391,10 +496,17 @@ export const InteractiveTourModal: React.FC<InteractiveTourModalProps> = ({
                     showSoundToggle={false} 
                     className="shrink-0 scale-90 -mt-1" 
                   />
-                  <div className="text-xs text-neutral-200">
-                    <span className="font-mono text-[9px] uppercase tracking-wider text-amber-300 font-bold block mb-1">
-                      Archie &bull; Tu Mentor
-                    </span>
+                  <div className="text-xs text-neutral-200 flex-grow">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-mono text-[9px] uppercase tracking-wider text-amber-300 font-bold block">
+                        Archie &bull; Tu Mentor (Gemini Live)
+                      </span>
+                      {isLoadingVoice && (
+                        <span className="text-[9px] font-mono text-amber-400 animate-pulse">
+                          Cargando audio...
+                        </span>
+                      )}
+                    </div>
                     <p className="italic leading-relaxed">
                       "{step.owlSpeech}"
                     </p>
