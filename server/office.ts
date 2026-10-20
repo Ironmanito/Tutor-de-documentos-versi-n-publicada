@@ -1,5 +1,4 @@
 import JSZip from 'jszip';
-import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 import type { GoogleGenAI } from '@google/genai';
@@ -205,7 +204,7 @@ export async function extractTextFromPPT(buffer: Buffer): Promise<string> {
   return `--- PRESENTACIÓN POWERPOINT (FORMATO .PPT) ---\n\n${extracted}`;
 }
 
-const OCR_MODELS = ['gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+const OCR_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
 /**
  * Executes a Gemini call with automated retry for transient errors (e.g. 503 UNAVAILABLE / high demand spikes).
@@ -252,11 +251,13 @@ export async function extractTextFromImage(
   let targetMime = mimeType || 'image/jpeg';
 
   try {
-    const meta = await sharp(buffer).metadata();
+    const sharpMod: any = await import('sharp');
+    const sharpFn = sharpMod.default || sharpMod;
+    const meta = await sharpFn(buffer).metadata();
     const needsResize = (meta.width && meta.width > 2500) || (meta.height && meta.height > 2500) || buffer.length > 5 * 1024 * 1024;
     
     if (needsResize || !['image/jpeg', 'image/png', 'image/webp'].includes(targetMime)) {
-      processedBuffer = await sharp(buffer)
+      processedBuffer = await sharpFn(buffer)
         .resize({ width: 2500, height: 2500, fit: 'inside', withoutEnlargement: true })
         .jpeg({ quality: 88 })
         .toBuffer();
@@ -264,7 +265,7 @@ export async function extractTextFromImage(
       console.log(`[Image OCR] Imagen optimizada con Sharp a JPEG (${Math.round(processedBuffer.length / 1024)} KB)`);
     }
   } catch (sharpErr) {
-    console.warn("[Image OCR] Sharp no pudo procesar la imagen, usando buffer original:", sharpErr);
+    console.warn("[Image OCR] Sharp no disponible en este entorno, enviando imagen original a Gemini Vision.");
   }
 
   const prompt = `Eres un asistente de transcripción y extracción académica de alta fidelidad.

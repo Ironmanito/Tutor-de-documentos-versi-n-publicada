@@ -9,6 +9,7 @@ import { AudioStreamPlayer, AudioRecorder } from '../lib/audio';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { MicErrorGuide } from './MicErrorGuide';
+import { telemetry } from '../lib/telemetry';
 
 // Shared types
 export interface OralQuestion {
@@ -731,6 +732,13 @@ export function OralEvaluatorSession({
         s.close();
       } catch (_) {}
     });
+    const answered = localSession.questions.filter(q => q.userAnswer !== undefined);
+    if (answered.length > 0 && !localSession.isCompleted) {
+      const avg = Math.round(answered.reduce((sum, q) => sum + (q.score || 0), 0) / answered.length);
+      telemetry.recordOralExamCompleted(avg, answered.length, localSession.topicTitle, `Examen oral parcial (${answered.length}/5 preguntas respondidas).`);
+    } else {
+      void telemetry.forceDispatch();
+    }
     onEnd();
   };
 
@@ -857,6 +865,8 @@ export function OralEvaluatorSession({
                       const strengths = args.strengths || "Argumentación expuesta durante el examen.";
                       const toImprove = args.toImprove || "Profundizar en los conceptos del cuaderno.";
 
+                      telemetry.recordQuestionDecision(2500, 0, score);
+
                       // Update state locally & trigger save
                       setLocalSession(prev => {
                         const updatedQuestions = [...prev.questions];
@@ -885,6 +895,12 @@ export function OralEvaluatorSession({
                             finalFeedback = "Examen aprobado con observaciones. Comprendes los lineamientos generales del tema, pero te cuesta profundizar de manera estructurada en tus explicaciones orales. Te sugerimos repasar los puntos señalados.";
                           } else {
                             finalFeedback = "Examen reprobado. Presentas dificultades para conceptualizar e hilar ideas orales basadas en el contenido. Te recomendamos repasar exhaustivamente los apuntes y volver a rendir este módulo.";
+                          }
+
+                          if (!prev.isCompleted) {
+                            setTimeout(() => {
+                              telemetry.recordOralExamCompleted(finalScore || 0, 5, prev.topicTitle, finalFeedback);
+                            }, 100);
                           }
                         }
 

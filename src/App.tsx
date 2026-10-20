@@ -18,6 +18,7 @@ import { UploadProgressAnimation, FileProgressItem } from './components/UploadPr
 import { trackUserActivity, trackUserAction, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
 import { DocumentViewer } from './components/DocumentViewer';
 import { ConsentModal } from './components/ConsentModal';
+import { telemetry } from './lib/telemetry';
 
 class WebSocketSession {
   private ws: WebSocket;
@@ -549,10 +550,12 @@ export default function App() {
 
   // Auto-guardar la sesión activa en tiempo real ante cualquier cambio relevante
   useEffect(() => {
+    const resolvedTitle = activeStudyTitle || (files[0]?.name ? files[0].name.replace(/\.[^/.]+$/, '') : 'Cuaderno de estudio');
     if (studyText || (files && files.length > 0) || activeStudyId || activeStudyTitle) {
+      telemetry.setActiveNotebook(resolvedTitle);
       saveActiveSession({
         id: activeStudyId,
-        title: activeStudyTitle || (files[0]?.name ? files[0].name.replace(/\.[^/.]+$/, '') : 'Cuaderno de estudio'),
+        title: resolvedTitle,
         files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
         studyText,
         fileTexts,
@@ -5003,15 +5006,17 @@ app.post('/api/create-checkout', async (req, res) => {
             <span className="xs:hidden">Feedback</span>
           </button>
 
-          <button
-            onClick={() => setShowAdminPanel(true)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-300 hover:text-white border border-white/10 transition-colors cursor-pointer text-[9px] font-bold"
-            title="Ver quiénes usan la app y enviar correos"
-          >
-            <Users className="w-3 h-3 text-amber-400" />
-            <span className="hidden sm:inline">Comunidad ({userEmail === 'martinvelozz01@gmail.com' ? 'Admin' : 'Ver'})</span>
-            <span className="sm:hidden">Usuarios</span>
-          </button>
+          {(userEmail || driveUser?.email || '').trim().toLowerCase() === 'martinvelozz01@gmail.com' && (
+            <button
+              onClick={() => setShowAdminPanel(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-300 hover:text-white border border-white/10 transition-colors cursor-pointer text-[9px] font-bold"
+              title="Ver quiénes usan la app y enviar correos"
+            >
+              <Users className="w-3 h-3 text-amber-400" />
+              <span className="hidden sm:inline">Comunidad (Admin)</span>
+              <span className="sm:hidden">Admin</span>
+            </button>
+          )}
         </div>
 
         <div className="hidden md:flex items-center gap-3">
@@ -5252,6 +5257,7 @@ function StudySession({
   const isClosingIntentionalRef = useRef(false);
   const keyConceptsHistoryRef = useRef<string[]>([]);
   const reconnectTimeoutRef = useRef<any>(null);
+  const voiceStartTimeRef = useRef<number>(Date.now());
 
   useEffect(() => {
     keyConceptsHistoryRef.current = keyConceptsHistory;
@@ -5265,6 +5271,8 @@ function StudySession({
     recorderRef.current?.stop();
     playerRef.current?.stop();
     sessionRef.current?.then((s: any) => s.close());
+    const durationSec = Math.round((Date.now() - voiceStartTimeRef.current) / 1000);
+    telemetry.recordVoiceSessionEnded('Tutor de Voz Libre', durationSec);
     onEnd();
   };
 
@@ -5823,6 +5831,7 @@ function FreeStudySession({
   const isClosingIntentionalRef = useRef(false);
   const keyConceptsHistoryRef = useRef<string[]>([]);
   const reconnectTimeoutRef = useRef<any>(null);
+  const voiceStartTimeRef = useRef<number>(Date.now());
 
   useEffect(() => {
     keyConceptsHistoryRef.current = keyConceptsHistory;
@@ -5836,6 +5845,8 @@ function FreeStudySession({
     recorderRef.current?.stop();
     playerRef.current?.stop();
     sessionRef.current?.then((s: any) => s.close());
+    const durationSec = Math.round((Date.now() - voiceStartTimeRef.current) / 1000);
+    telemetry.recordVoiceSessionEnded('Tutor de Voz Libre', durationSec);
     onEnd();
   };
 
@@ -6311,6 +6322,11 @@ function MultipleChoiceQuiz({
 
   const onSaveQuestionsRef = useRef(onSaveQuestions);
   const onEndRef = useRef(onEnd);
+  const questionShownAtRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    questionShownAtRef.current = Date.now();
+  }, [currentIndex, loading]);
 
   useEffect(() => {
     onSaveQuestionsRef.current = onSaveQuestions;
@@ -6488,9 +6504,12 @@ function MultipleChoiceQuiz({
     if (isAnswered) return;
     setSelected(index);
     setIsAnswered(true);
-    if (index === question.correctIndex) {
+    const isCorrect = index === question.correctIndex;
+    if (isCorrect) {
       setScore(s => s + 1);
     }
+    const latencyMs = Math.max(100, Date.now() - questionShownAtRef.current);
+    telemetry.recordQuestionDecision(latencyMs, 0, isCorrect ? 100 : 0);
   };
 
   const handleNext = () => {
@@ -6500,6 +6519,8 @@ function MultipleChoiceQuiz({
       setIsAnswered(false);
     } else {
       setIsFinished(true);
+      const pct = questions.length > 0 ? Math.round((score / questions.length) * 100) : 0;
+      telemetry.recordQuizCompleted('Cuestionario Escrito', pct, questions.length);
     }
   };
 

@@ -18,11 +18,27 @@ export interface MetadatosResiduales {
 
 export interface TelemetriaEvento {
   id: string;
-  tipo: 'navegacion' | 'lectura' | 'pregunta_respondida' | 'examen_oral' | 'foco_pantalla' | 'clic';
+  tipo: 'navegacion' | 'lectura' | 'pregunta_respondida' | 'examen_oral' | 'foco_pantalla' | 'clic' | 'feedback' | 'tutor_voz' | 'quiz_completado';
   pantalla: string;
   timestamp: number;
   duracion_ms?: number;
   detalles?: Record<string, any>;
+}
+
+export interface EvaluacionResumen {
+  tipo: 'quiz' | 'examen_oral' | 'tutor_voz';
+  tema: string;
+  calificacion?: number;
+  preguntas_count?: number;
+  comentario_ia?: string;
+  timestamp: string;
+}
+
+export interface FeedbackResumen {
+  rating: number;
+  category: string;
+  comment: string;
+  timestamp: string;
 }
 
 export interface DatosServicioSesion {
@@ -33,6 +49,8 @@ export interface DatosServicioSesion {
   promedio_calificacion?: number;
   examenes_orales_count: number;
   documentos_leidos_count: number;
+  evaluaciones_detalle?: EvaluacionResumen[];
+  feedback_enviado?: FeedbackResumen[];
 }
 
 export interface ExcedenteConductualConsolidado {
@@ -78,6 +96,7 @@ class TelemetryManager {
   private currentViewStartTime: number = Date.now();
   private visitedViews: Set<string> = new Set(['setup']);
   private consultedFiles: Set<string> = new Set();
+  private activeNotebook?: string;
   
   // Métricas de lectura
   private readingTimeMs: number = 0;
@@ -85,14 +104,16 @@ class TelemetryManager {
   private maxScrollDepth: number = 0;
   private textCopyCount: number = 0;
   
-  // Métricas de preguntas
+  // Métricas de preguntas y evaluaciones
   private questionsAnswered: number = 0;
   private scores: number[] = [];
   private oralExamsCount: number = 0;
   private documentsReadCount: number = 0;
+  private evaluacionesDetalle: EvaluacionResumen[] = [];
+  private feedbackEnviado: FeedbackResumen[] = [];
 
   private isListenerActive: boolean = false;
-  private isDispatched: boolean = false;
+  private lastDispatchTime: number = 0;
 
   constructor() {
     this.sessionId = `ses_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -112,6 +133,18 @@ class TelemetryManager {
         this.hiddenStartTime = now;
         this.tabSwitchesCount++;
         this.recordEvent('foco_pantalla', { estado: 'en_segundo_plano', cambios_acumulados: this.tabSwitchesCount });
+        // En móviles (Android/iOS), cambiar de app o bloquear pantalla suele cerrar la pestaña sin disparar beforeunload.
+        // Si hubo actividad de estudio o feedback, enviamos el reporte inmediatamente.
+        if (
+          this.questionsAnswered > 0 ||
+          this.oralExamsCount > 0 ||
+          this.documentsReadCount > 0 ||
+          this.feedbackEnviado.length > 0 ||
+          this.evaluacionesDetalle.length > 0 ||
+          (now - this.startTime >= 15000 && this.eventHistory.length > 2)
+        ) {
+          this.dispatchSessionBeacon();
+        }
       } else if (document.visibilityState === 'visible') {
         if (this.hiddenStartTime) {
           const duration = now - this.hiddenStartTime;
@@ -129,7 +162,7 @@ class TelemetryManager {
       }
     });
 
-    // 3. Envío al cerrar o abandonar página en Android
+    // 3. Envío al cerrar o abandonar página en Android / Desktop
     window.addEventListener('pagehide', () => {
       this.dispatchSessionBeacon();
     });
@@ -137,6 +170,12 @@ class TelemetryManager {
     window.addEventListener('beforeunload', () => {
       this.dispatchSessionBeacon();
     });
+  }
+
+  public setActiveNotebook(title: string) {
+    if (title && title.trim()) {
+      this.activeNotebook = title.trim();
+    }
   }
 
   public recordViewChange(newView: string) {
@@ -192,12 +231,72 @@ class TelemetryManager {
     }, latencyMs);
   }
 
-  public recordOralExamCompleted(scoreAverage: number, questionsCount: number = 5) {
+  public recordQuizCompleted(topicTitle: string, scorePct: number, questionsCount: number = 5) {
+    this.scores.push(scorePct);
+    this.evaluacionesDetalle.push({
+      tipo: 'quiz',
+      tema: topicTitle,
+      calificacion: scorePct,
+      preguntas_count: questionsCount,
+      comentario_ia: `Cuestionario Multiple Choice completado (${scorePct}% de acierto).`,
+      timestamp: new Date().toISOString()
+    });
+    this.recordEvent('quiz_completado', {
+      tema: topicTitle,
+      calificacion: scorePct,
+      preguntas: questionsCount
+    });
+    void this.forceDispatch();
+  }
+
+  public recordOralExamCompleted(scoreAverage: number, questionsCount: number = 5, topicTitle?: string, summaryFeedback?: string) {
     this.oralExamsCount++;
     this.scores.push(scoreAverage);
+    this.evaluacionesDetalle.push({
+      tipo: 'examen_oral',
+      tema: topicTitle || this.activeNotebook || 'Examen Oral',
+      calificacion: scoreAverage,
+      preguntas_count: questionsCount,
+      comentario_ia: summaryFeedback,
+      timestamp: new Date().toISOString()
+    });
     this.recordEvent('examen_oral', {
+      tema: topicTitle,
       promedio: scoreAverage,
       preguntas: questionsCount
+    });
+    void this.forceDispatch();
+  }
+
+  public recordVoiceSessionEnded(mode: string, durationSec: number, topicTitle?: string) {
+    if (durationSec < 5) return;
+    this.evaluacionesDetalle.push({
+      tipo: 'tutor_voz',
+      tema: topicTitle || this.activeNotebook || mode,
+      comentario_ia: `Sesión de voz en vivo (${mode}) durante ${durationSec}s.`,
+      timestamp: new Date().toISOString()
+    });
+    this.recordEvent('tutor_voz', {
+      modo: mode,
+      duracion_s: durationSec,
+      tema: topicTitle
+    }, durationSec * 1000);
+    if (durationSec >= 10) {
+      void this.forceDispatch();
+    }
+  }
+
+  public recordFeedbackSubmitted(rating: number, category: string, comment: string) {
+    this.feedbackEnviado.push({
+      rating,
+      category,
+      comment,
+      timestamp: new Date().toISOString()
+    });
+    this.recordEvent('feedback', {
+      rating,
+      category,
+      comment: comment.substring(0, 120)
     });
   }
 
@@ -270,12 +369,15 @@ class TelemetryManager {
       iniciada_en: new Date(this.startTime).toISOString(),
       finalizada_en: new Date(now).toISOString(),
       datos_servicio: {
+        cuaderno_activo: this.activeNotebook,
         archivos_consultados: Array.from(this.consultedFiles),
         vistas_visitadas: Array.from(this.visitedViews),
         preguntas_respondidas_count: this.questionsAnswered,
         promedio_calificacion: avgScore,
         examenes_orales_count: this.oralExamsCount,
-        documentos_leidos_count: this.documentsReadCount
+        documentos_leidos_count: this.documentsReadCount,
+        evaluaciones_detalle: this.evaluacionesDetalle,
+        feedback_enviado: this.feedbackEnviado
       },
       excedente_conductual: {
         duracion_total_sesion_ms: totalDuration,
@@ -297,8 +399,12 @@ class TelemetryManager {
   }
 
   public dispatchSessionBeacon() {
+    const now = Date.now();
     // Si la sesión duró menos de 5 segundos y no hubo actividad, ignorar para evitar reportes vacíos
-    if (Date.now() - this.startTime < 5000 && this.eventHistory.length <= 1) return;
+    if (now - this.startTime < 5000 && this.eventHistory.length <= 1 && this.feedbackEnviado.length === 0) return;
+    // Evitar ráfagas duplicadas en menos de 2 segundos (ej. visibilitychange + pagehide simultáneos)
+    if (now - this.lastDispatchTime < 2000) return;
+    this.lastDispatchTime = now;
 
     const payload = this.buildPayload();
     const dataString = JSON.stringify(payload);
@@ -320,6 +426,8 @@ class TelemetryManager {
 
   public async forceDispatch(): Promise<boolean> {
     try {
+      const now = Date.now();
+      this.lastDispatchTime = now;
       const payload = this.buildPayload();
       const res = await fetch('/api/analytics/session-end', {
         method: 'POST',

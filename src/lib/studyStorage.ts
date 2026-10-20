@@ -84,17 +84,44 @@ export function clearActiveSession() {
   }
 }
 
+function getIsolatedGuestKey(): string {
+  try {
+    let vid = localStorage.getItem('tutor_visitor_id');
+    if (!vid) {
+      vid = `vis_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      localStorage.setItem('tutor_visitor_id', vid);
+    }
+    return `guest_${vid}`;
+  } catch {
+    return 'guest_local';
+  }
+}
+
+function resolveUserStorageKey(rawEmail?: string | null, uid?: string | null): string {
+  const clean = (rawEmail || '').trim().toLowerCase();
+  if (clean && clean !== 'guest') {
+    return clean;
+  }
+  return getIsolatedGuestKey() || uid || 'guest_local';
+}
+
 /**
  * Gets cached studies from localStorage for instant display across multiple keys
  */
 export function getLocalCachedStudies(userKey?: string | null): SavedStudyRecord[] {
   const result: SavedStudyRecord[] = [];
   const seenIds = new Set<string>();
+  const cleanTarget = (userKey || '').trim().toLowerCase();
+  const isRealEmail = cleanTarget.includes('@');
 
   const addStudies = (studies: SavedStudyRecord[]) => {
     if (Array.isArray(studies)) {
       for (const s of studies) {
         if (s && s.id && !seenIds.has(s.id)) {
+          // Isolate studies belonging to a different registered email account
+          if (isRealEmail && s.userEmail && s.userEmail.includes('@') && s.userEmail.trim().toLowerCase() !== cleanTarget) {
+            continue;
+          }
           seenIds.add(s.id);
           result.push(s);
         }
@@ -104,20 +131,24 @@ export function getLocalCachedStudies(userKey?: string | null): SavedStudyRecord
 
   try {
     // 1. User specific key
-    if (userKey) {
-      const rawUser = localStorage.getItem(STORAGE_KEY_PREFIX + userKey.trim().toLowerCase());
+    if (cleanTarget) {
+      const rawUser = localStorage.getItem(STORAGE_KEY_PREFIX + cleanTarget);
       if (rawUser) addStudies(JSON.parse(rawUser));
     }
 
-    // 2. Global registry key
+    // 2. Isolated guest key for this browser
+    const guestKey = getIsolatedGuestKey();
+    const rawIsolatedGuest = localStorage.getItem(STORAGE_KEY_PREFIX + guestKey);
+    if (rawIsolatedGuest) addStudies(JSON.parse(rawIsolatedGuest));
+
+    // 3. Global registry key
     const rawGlobal = localStorage.getItem(GLOBAL_STUDIES_KEY);
     if (rawGlobal) addStudies(JSON.parse(rawGlobal));
 
-    // 3. Guest key
+    // 4. Legacy guest keys
     const rawGuest = localStorage.getItem(STORAGE_KEY_PREFIX + 'guest');
     if (rawGuest) addStudies(JSON.parse(rawGuest));
 
-    // 4. Legacy key
     const legacy = localStorage.getItem('tutor_user_studies');
     if (legacy) addStudies(JSON.parse(legacy));
   } catch (e) {
@@ -131,12 +162,12 @@ export function getLocalCachedStudies(userKey?: string | null): SavedStudyRecord
  */
 export function setLocalCachedStudies(userKey: string, studies: SavedStudyRecord[]) {
   try {
-    const cleanUser = userKey ? userKey.trim().toLowerCase() : 'guest';
+    const cleanUser = resolveUserStorageKey(userKey);
     localStorage.setItem(STORAGE_KEY_PREFIX + cleanUser, JSON.stringify(studies));
     localStorage.setItem('tutor_user_studies', JSON.stringify(studies));
 
     // Also update global master registry merging any existing studies
-    const currentGlobal = getLocalCachedStudies();
+    const currentGlobal = getLocalCachedStudies(cleanUser);
     const globalIds = new Set(studies.map(s => s.id));
     const mergedGlobal = [...studies];
     for (const g of currentGlobal) {
@@ -157,7 +188,6 @@ export async function saveStudyNotebook(
   study: SavedStudyRecord,
   user: { uid?: string | null; email?: string | null }
 ): Promise<{ success: boolean; firestoreSaved: boolean; serverSaved: boolean }> {
-  const email = (user.email || '').trim().toLowerCase();
   let uid = user.uid || auth.currentUser?.uid;
   if (!uid) {
     try {
@@ -167,7 +197,8 @@ export async function saveStudyNotebook(
       console.warn('[Storage] Anonymous auth failed:', e);
     }
   }
-  const userKey = email || uid || 'guest';
+  const email = resolveUserStorageKey(user.email, uid);
+  const userKey = email;
 
   let firestoreSaved = false;
   let serverSaved = false;
@@ -279,7 +310,6 @@ export async function saveStudyNotebook(
 export async function loadUserNotebooks(
   user: { uid?: string | null; email?: string | null }
 ): Promise<{ studies: SavedStudyRecord[]; fromCloud: boolean }> {
-  const email = (user.email || '').trim().toLowerCase();
   let uid = user.uid || auth.currentUser?.uid;
   if (!uid) {
     try {
@@ -289,7 +319,8 @@ export async function loadUserNotebooks(
       console.warn('[Storage] Anonymous auth failed on load:', e);
     }
   }
-  const userKey = email || uid || 'guest';
+  const email = resolveUserStorageKey(user.email, uid);
+  const userKey = email;
 
   // Instant load from local cache
   const localStudies = getLocalCachedStudies(userKey);
@@ -423,9 +454,9 @@ export async function deleteStudyNotebook(
   studyId: string,
   user: { uid?: string | null; email?: string | null }
 ): Promise<boolean> {
-  const email = (user.email || '').trim().toLowerCase();
   const uid = user.uid || auth.currentUser?.uid;
-  const userKey = email || uid || 'guest';
+  const email = resolveUserStorageKey(user.email, uid);
+  const userKey = email;
 
   // 1. Delete from Firestore
   if (uid) {

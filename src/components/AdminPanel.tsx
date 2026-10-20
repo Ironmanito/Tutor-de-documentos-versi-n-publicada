@@ -82,6 +82,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [averageRating, setAverageRating] = useState(0);
   const [critiquesCount, setCritiquesCount] = useState(0);
   const [activeToday, setActiveToday] = useState(0);
+  const [isTestingEmail, setIsTestingEmail] = useState(false);
+  const [emailTestFeedback, setEmailTestFeedback] = useState<string | null>(null);
+
+  const handleTestAdminEmail = async () => {
+    if (!isAdmin || isTestingEmail) return;
+    setIsTestingEmail(true);
+    setEmailTestFeedback(null);
+    try {
+      const res = await fetch('/api/admin/test-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-email': currentUserEmail || ''
+        }
+      });
+      const data = await res.json();
+      if (data.sent) {
+        setEmailTestFeedback(`✅ Email enviado a martinvelozz01@gmail.com (${data.provider})`);
+      } else {
+        setEmailTestFeedback(`⚠️ ${data.error || 'Configura GMAIL_APP_PASSWORD o RESEND_API_KEY en Render'}`);
+      }
+    } catch {
+      setEmailTestFeedback('❌ Error al conectar con el servidor de correo');
+    } finally {
+      setIsTestingEmail(false);
+    }
+  };
 
   const loadData = async () => {
     if (!isAdmin) return;
@@ -329,7 +356,21 @@ Generado por Tutor de Cuaderno AI`;
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {emailTestFeedback && (
+              <span className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-200">
+                {emailTestFeedback}
+              </span>
+            )}
+            <button
+              onClick={handleTestAdminEmail}
+              disabled={isTestingEmail}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-colors cursor-pointer"
+              title="Enviar correo de prueba a martinvelozz01@gmail.com"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span>{isTestingEmail ? 'Enviando...' : 'Probar Mail Admin'}</span>
+            </button>
             <button
               onClick={loadData}
               disabled={isLoading}

@@ -1,5 +1,6 @@
 import { doc, setDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
+import { telemetry } from './telemetry';
 
 export interface AppUserProfile {
   id?: string;
@@ -43,6 +44,8 @@ export interface FeedbackItem {
   createdAt: string;
   device?: string;
   allowContact?: boolean;
+  emailNotificationSent?: boolean;
+  emailProvider?: string;
 }
 
 export interface FeedbackSubmission {
@@ -153,19 +156,29 @@ export function trackUserAction(action: string, details?: string) {
 /**
  * Submits user feedback (positive, neutral or critical) to Firestore & Server DB
  */
-export async function submitUserFeedback(submission: FeedbackSubmission): Promise<{ success: boolean; id?: string }> {
+export async function submitUserFeedback(submission: FeedbackSubmission): Promise<{ success: boolean; id?: string; emailNotificationSent?: boolean }> {
   const device = `${navigator.platform} - ${navigator.userAgent.substring(0, 120)}`;
   const now = new Date().toISOString();
+  const visitorId = getOrCreateVisitorId();
+  const resolvedEmail = submission.userEmail || localStorage.getItem(STORAGE_GUEST_USER_EMAIL) || localStorage.getItem('user_email') || undefined;
+  const resolvedName = submission.userName || localStorage.getItem(STORAGE_GUEST_USER_NAME) || localStorage.getItem('user_display_name') || undefined;
 
   let assignedId = `fb_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  let emailNotificationSent = false;
 
-  // 1. Send to Backend API
+  // Record in active session telemetry so end-of-session email also includes it
+  telemetry.recordFeedbackSubmitted(submission.rating, submission.category, submission.comment);
+
+  // 1. Send to Backend API (which also immediately emails the administrator)
   try {
     const res = await fetch('/api/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...submission,
+        userId: submission.userId || visitorId,
+        userEmail: resolvedEmail,
+        userName: resolvedName,
         device,
       }),
     });
@@ -173,6 +186,9 @@ export async function submitUserFeedback(submission: FeedbackSubmission): Promis
       const data = await res.json();
       if (data?.feedback?.id) {
         assignedId = data.feedback.id;
+      }
+      if (data?.emailSent) {
+        emailNotificationSent = true;
       }
     }
   } catch (e) {

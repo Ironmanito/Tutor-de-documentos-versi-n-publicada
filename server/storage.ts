@@ -292,6 +292,88 @@ export async function readFeedbackDbFromGCS(): Promise<any | null> {
 }
 
 /**
+ * Saves session telemetry and psychometric reports database to GCS.
+ */
+export async function saveSessionsDbToGCS(sessionsData: any): Promise<boolean> {
+  const bucketName = getBucketName();
+  if (!bucketName || isGcsWriteDisabled) return false;
+  try {
+    const storage = getStorageClient();
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file("database/admin_sessions_db.json");
+    await file.save(Buffer.from(JSON.stringify(sessionsData, null, 2), "utf8"), {
+      contentType: "application/json",
+      resumable: false
+    });
+    return true;
+  } catch (err: any) {
+    if (err?.code === 403 || err?.code === 404) {
+      isGcsWriteDisabled = true;
+    } else {
+      console.warn("[GCS] Advertencia al guardar sesiones en GCS:", err.message || err);
+    }
+    return false;
+  }
+}
+
+export async function readSessionsDbFromGCS(): Promise<any | null> {
+  const bucketName = getBucketName();
+  if (!bucketName) return null;
+  try {
+    const storage = getStorageClient();
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file("database/admin_sessions_db.json");
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const [content] = await file.download();
+    return JSON.parse(content.toString("utf8"));
+  } catch (err: any) {
+    return null;
+  }
+}
+
+/**
+ * Saves user auth PINs & credentials database to GCS.
+ */
+export async function saveAuthDbToGCS(authData: any): Promise<boolean> {
+  const bucketName = getBucketName();
+  if (!bucketName || isGcsWriteDisabled) return false;
+  try {
+    const storage = getStorageClient();
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file("database/users_auth_db.json");
+    await file.save(Buffer.from(JSON.stringify(authData, null, 2), "utf8"), {
+      contentType: "application/json",
+      resumable: false
+    });
+    return true;
+  } catch (err: any) {
+    if (err?.code === 403 || err?.code === 404) {
+      isGcsWriteDisabled = true;
+    } else {
+      console.warn("[GCS] Advertencia al guardar auth en GCS:", err.message || err);
+    }
+    return false;
+  }
+}
+
+export async function readAuthDbFromGCS(): Promise<any | null> {
+  const bucketName = getBucketName();
+  if (!bucketName) return null;
+  try {
+    const storage = getStorageClient();
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file("database/users_auth_db.json");
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const [content] = await file.download();
+    return JSON.parse(content.toString("utf8"));
+  } catch (err: any) {
+    return null;
+  }
+}
+
+/**
  * Reads user study notebooks database directly from Google Cloud Storage.
  */
 export async function readUserDbFromGCS(): Promise<any | null> {

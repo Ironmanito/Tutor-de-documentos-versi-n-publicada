@@ -24,15 +24,15 @@ service cloud.firestore {
 
     // User profiles & activity tracking
     match /users/{userId} {
-      allow get: if (isOwner(userId) || isSignedIn() || isAdmin()) && isValidId(userId);
+      allow get: if (isOwner(userId) || isAdmin()) && isValidId(userId);
       allow list: if isAdmin();
-      allow create, update: if (isOwner(userId) || isSignedIn() || isAdmin()) && isValidId(userId);
+      allow create, update: if (isOwner(userId) || isAdmin()) && isValidId(userId);
       allow delete: if isAdmin() && isValidId(userId);
 
       match /studies/{studyId} {
-        allow get, list: if isOwner(userId) || isSignedIn() || isAdmin();
-        allow create, update: if ((isOwner(userId) || isSignedIn()) && isValidId(studyId)) || isAdmin();
-        allow delete: if ((isOwner(userId) || isSignedIn()) && isValidId(studyId)) || isAdmin();
+        allow get, list: if isOwner(userId) || isAdmin();
+        allow create, update: if (isOwner(userId) && isValidId(studyId)) || isAdmin();
+        allow delete: if (isOwner(userId) && isValidId(studyId)) || isAdmin();
       }
     }
 

@@ -18,6 +18,10 @@ import {
   readUsersDbFromGCS,
   saveFeedbackDbToGCS,
   readFeedbackDbFromGCS,
+  saveSessionsDbToGCS,
+  readSessionsDbFromGCS,
+  saveAuthDbToGCS,
+  readAuthDbFromGCS,
   getBucketName, 
   getStorageStatus,
   resolveGoogleCredentials,
@@ -229,6 +233,8 @@ interface FeedbackItem {
   createdAt: string;
   device?: string;
   allowContact?: boolean;
+  emailNotificationSent?: boolean;
+  emailProvider?: string;
 }
 
 function readFeedbackDb(): FeedbackItem[] {
@@ -291,6 +297,8 @@ interface SessionReportItem {
     recomendacion_pedagogica: string;
   };
   createdAt: string;
+  emailNotificationSent?: boolean;
+  emailProvider?: string;
 }
 
 function readSessionsDb(): SessionReportItem[] {
@@ -306,13 +314,26 @@ function readSessionsDb(): SessionReportItem[] {
   }
 }
 
-function writeSessionsDb(items: SessionReportItem[]) {
+async function writeSessionsDb(items: SessionReportItem[]) {
   try {
     fs.writeFileSync(ADMIN_SESSIONS_PATH, JSON.stringify(items, null, 2), "utf8");
+    await saveSessionsDbToGCS(items);
   } catch (err) {
     console.error("Error writing sessions DB:", err);
   }
 }
+
+// Initial sync sessions from GCS
+readSessionsDbFromGCS().then(gcsSessions => {
+  if (gcsSessions && Array.isArray(gcsSessions) && gcsSessions.length > 0) {
+    try {
+      fs.writeFileSync(ADMIN_SESSIONS_PATH, JSON.stringify(gcsSessions, null, 2), "utf8");
+      console.log("[GCS Initializer] Sesiones psicométricas sincronizadas desde GCS.");
+    } catch (e) {
+      console.warn("[GCS Initializer] Error guardando sesiones locales:", e);
+    }
+  }
+}).catch(() => {});
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -388,7 +409,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 2, baseDelayMs =
   throw lastError;
 }
 
-const GEMINI_TEXT_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+const GEMINI_TEXT_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
 async function generateContentWithFallback(
   ai: GoogleGenAI,
@@ -827,13 +848,26 @@ function readAuthDb(): Record<string, UserAuthRecord> {
   }
 }
 
-function writeAuthDb(db: Record<string, UserAuthRecord>) {
+async function writeAuthDb(db: Record<string, UserAuthRecord>) {
   try {
     fs.writeFileSync(USERS_AUTH_DB_PATH, JSON.stringify(db, null, 2), "utf8");
+    await saveAuthDbToGCS(db);
   } catch (e) {
     console.error("[Auth] Error writing auth DB:", e);
   }
 }
+
+// Initial sync auth DB from GCS
+readAuthDbFromGCS().then(gcsAuth => {
+  if (gcsAuth && Object.keys(gcsAuth).length > 0) {
+    try {
+      fs.writeFileSync(USERS_AUTH_DB_PATH, JSON.stringify(gcsAuth, null, 2), "utf8");
+      console.log("[GCS Initializer] Credenciales PIN/Auth sincronizadas desde GCS.");
+    } catch (e) {
+      console.warn("[GCS Initializer] Error guardando auth local:", e);
+    }
+  }
+}).catch(() => {});
 
 function hashPinWithSalt(pin: string, salt: string): string {
   return crypto.createHash("sha256").update(`${pin}:${salt}:tutordecuaderno_salt`).digest("hex");
@@ -942,6 +976,154 @@ async function sendEmailVerificationCode(to: string, code: string, name?: string
   // 3. Fallback when no external email provider is needed
   console.log(`[AUTH CODE] Para: ${to} -> CÓDIGO DIRECTO: [${code}]`);
   return { sent: false, provider: "none" };
+}
+
+const ADMIN_NOTIFICATION_EMAIL = (process.env.ADMIN_EMAIL || 'martinvelozz01@gmail.com').trim();
+const sessionEmailDispatchHistory = new Map<string, { lastSignature: string; lastSentAt: number }>();
+
+function getEmailConfigurationStatus() {
+  const hasResend = !!process.env.RESEND_API_KEY;
+  const smtpHost = process.env.SMTP_HOST || (process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
+  const smtpUser = process.env.SMTP_USER || process.env.GMAIL_USER;
+  const smtpPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASS;
+  const hasSmtp = !!(smtpHost && smtpUser && smtpPass);
+  const hasWeb3Forms = !!process.env.WEB3FORMS_ACCESS_KEY;
+
+  return {
+    adminEmail: ADMIN_NOTIFICATION_EMAIL,
+    isConfigured: hasResend || hasSmtp || hasWeb3Forms,
+    activeProvider: hasResend ? 'Resend API' : hasSmtp ? `SMTP (${smtpHost})` : hasWeb3Forms ? 'Web3Forms' : 'FormSubmit / Log Local (Configurar GMAIL_APP_PASSWORD o RESEND_API_KEY en Render)',
+    hasResend,
+    hasSmtp,
+    hasWeb3Forms
+  };
+}
+
+async function sendAdminNotificationEmail(params: {
+  subject: string;
+  html: string;
+  text: string;
+  replyTo?: string;
+}): Promise<{ sent: boolean; provider: string; error?: string }> {
+  const to = ADMIN_NOTIFICATION_EMAIL;
+  const { subject, html, text, replyTo } = params;
+
+  // 1. Resend API
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const payload: Record<string, any> = {
+        from: process.env.RESEND_FROM || "Tutor de Cuaderno <onboarding@resend.dev>",
+        to: [to],
+        subject,
+        html,
+        text
+      };
+      if (replyTo && replyTo.includes('@')) {
+        payload.reply_to = replyTo;
+      }
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        console.log(`[Admin Email] Notificación enviada a ${to} vía Resend: ${subject}`);
+        return { sent: true, provider: "resend" };
+      }
+      const errData = await res.json().catch(() => ({}));
+      console.warn("[Admin Email] Resend API error:", errData);
+    } catch (e: any) {
+      console.warn("[Admin Email] Resend request failed:", e.message || e);
+    }
+  }
+
+  // 2. SMTP (Gmail / Brevo / Custom SMTP)
+  const smtpHost = process.env.SMTP_HOST || (process.env.GMAIL_USER ? "smtp.gmail.com" : undefined);
+  const smtpUser = process.env.SMTP_USER || process.env.GMAIL_USER;
+  const smtpPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASS;
+
+  if (smtpHost && smtpUser && smtpPass) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(process.env.SMTP_PORT || "465", 10),
+        secure: (process.env.SMTP_SECURE === "true" || !process.env.SMTP_PORT || process.env.SMTP_PORT === "465"),
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        }
+      });
+
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || `"Tutor de Cuaderno AI" <${smtpUser}>`,
+        to,
+        replyTo: replyTo && replyTo.includes('@') ? replyTo : undefined,
+        subject,
+        text,
+        html
+      });
+
+      console.log(`[Admin Email] Notificación enviada a ${to} vía SMTP (${smtpHost}): ${subject}`);
+      return { sent: true, provider: "smtp" };
+    } catch (smtpErr: any) {
+      console.warn("[Admin Email] SMTP delivery error:", smtpErr.message || smtpErr);
+    }
+  }
+
+  // 3. Web3Forms HTTP API (if WEB3FORMS_ACCESS_KEY is configured)
+  if (process.env.WEB3FORMS_ACCESS_KEY) {
+    try {
+      const res = await fetch("https://api.web3forms.com/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          access_key: process.env.WEB3FORMS_ACCESS_KEY,
+          subject,
+          from_name: "Tutor de Cuaderno AI",
+          replyto: replyTo || to,
+          message: text
+        })
+      });
+      if (res.ok) {
+        console.log(`[Admin Email] Notificación enviada a ${to} vía Web3Forms: ${subject}`);
+        return { sent: true, provider: "web3forms" };
+      }
+    } catch (wErr: any) {
+      console.warn("[Admin Email] Web3Forms error:", wErr.message || wErr);
+    }
+  }
+
+  // 4. FormSubmit Zero-Config HTTP Relay fallback
+  try {
+    const res = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(to)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Referer": "https://tutor-de-documentos-version-publicada.onrender.com/",
+        "Origin": "https://tutor-de-documentos-version-publicada.onrender.com"
+      },
+      body: JSON.stringify({
+        _subject: subject,
+        _replyto: replyTo || to,
+        _template: "box",
+        mensaje: text
+      })
+    });
+    if (res.ok) {
+      const data: any = await res.json().catch(() => ({}));
+      if (data && (data.success === "true" || data.success === true)) {
+        console.log(`[Admin Email] Notificación enviada a ${to} vía FormSubmit: ${subject}`);
+        return { sent: true, provider: "formsubmit" };
+      }
+    }
+  } catch (_) {}
+
+  console.log(`[Admin Email Fallback Log] Para: ${to} | Asunto: ${subject}\n${text}`);
+  return { sent: false, provider: "log_only", error: "Configura RESEND_API_KEY o GMAIL_USER + GMAIL_APP_PASSWORD en las variables de entorno para entrega directa por correo." };
 }
 
 // Endpoint: Check if email exists & has PIN
@@ -1314,7 +1496,16 @@ app.get("/api/admin/users", (req, res) => {
 // FEEDBACK & CRITIQUES ENDPOINTS
 // ==========================================
 
-app.post("/api/feedback", (req, res) => {
+const CATEGORY_LABELS: Record<string, string> = {
+  critique: 'Crítica / Punto Débil',
+  bug: 'Fallo Técnico / Bug',
+  voice_tutor: 'Tutor de Voz',
+  exam: 'Evaluador Oral / Quiz',
+  suggestion: 'Idea / Mejora',
+  general: 'Opinión General'
+};
+
+app.post("/api/feedback", async (req, res) => {
   try {
     const { userId, userEmail, userName, rating, category, comment, device, allowContact } = req.body;
     if (!comment || typeof comment !== "string" || !comment.trim()) {
@@ -1336,11 +1527,9 @@ app.post("/api/feedback", (req, res) => {
       status: 'new',
       createdAt: now,
       device: device || undefined,
-      allowContact: allowContact !== false
+      allowContact: allowContact !== false,
+      emailNotificationSent: false
     };
-
-    feedbackList.unshift(newFeedback);
-    writeFeedbackDb(feedbackList);
 
     // If user provided an email, also ensure they are in the users list
     if (userEmail && userEmail.includes('@')) {
@@ -1362,15 +1551,103 @@ app.post("/api/feedback", (req, res) => {
           lastAction: 'Envió feedback',
           actionsCount: 1
         };
-        writeUsersDb(users);
+        await writeUsersDb(users);
       }
     }
 
-    console.log(`[Feedback] Recibido nuevo feedback (${newFeedback.rating}★ [${newFeedback.category}]): ${newFeedback.comment.substring(0, 60)}...`);
-    res.json({ success: true, feedback: newFeedback });
+    // Enviar notificación inmediata por correo al Administrador
+    const starsStr = '★'.repeat(newFeedback.rating) + '☆'.repeat(Math.max(0, 5 - newFeedback.rating));
+    const categoryName = CATEGORY_LABELS[newFeedback.category] || newFeedback.category;
+    const senderLabel = newFeedback.userName || newFeedback.userEmail || `Visitante (${newFeedback.userId || 'anónimo'})`;
+    const formattedDate = new Date(now).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+
+    const emailSubject = `💬 [Feedback ${newFeedback.rating}/5 ★] ${categoryName} de ${senderLabel} — Tutor de Cuaderno`;
+    const emailText = [
+      `NUEVO FEEDBACK PARA EL ADMINISTRADOR - TUTOR DE CUADERNO`,
+      `========================================================`,
+      `Calificación: ${starsStr} (${newFeedback.rating}/5)`,
+      `Categoría: ${categoryName}`,
+      `Usuario: ${newFeedback.userName || 'No especificado'}`,
+      `Correo: ${newFeedback.userEmail || 'Anónimo / No proporcionado'}`,
+      `ID Visitante: ${newFeedback.userId || 'N/A'}`,
+      `Permite contacto: ${newFeedback.allowContact ? 'Sí' : 'No'}`,
+      `Fecha (AR): ${formattedDate}`,
+      `Dispositivo: ${newFeedback.device || 'Web'}`,
+      ``,
+      `COMENTARIO DEL USUARIO:`,
+      `"${newFeedback.comment}"`,
+      `========================================================`
+    ].join('\n');
+
+    const emailHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 28px; background-color: #0f1115; color: #f4f4f5; border-radius: 16px; border: 1px solid #f59e0b40;">
+        <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #27272a; padding-bottom: 16px; margin-bottom: 20px;">
+          <span style="font-size: 18px; font-weight: 800; color: #f59e0b;">Tutor de Cuaderno &bull; Feedback de Usuario</span>
+          <span style="font-size: 12px; color: #a1a1aa;">${formattedDate}</span>
+        </div>
+        <div style="background-color: #181920; border-radius: 12px; padding: 16px; margin-bottom: 20px; border: 1px solid #27272a;">
+          <div style="font-size: 22px; color: #fbbf24; letter-spacing: 3px; margin-bottom: 6px;">${starsStr} <span style="font-size: 14px; color: #e4e4e7;">(${newFeedback.rating}/5)</span></div>
+          <div style="font-size: 13px; color: #34d399; font-weight: 600; text-transform: uppercase;">Categoría: ${categoryName}</div>
+        </div>
+        <div style="background-color: #14151a; border-left: 4px solid #f59e0b; padding: 18px; border-radius: 8px; margin-bottom: 20px;">
+          <div style="font-size: 11px; text-transform: uppercase; color: #a1a1aa; margin-bottom: 6px; font-weight: bold;">Comentario / Crítica / Sugerencia:</div>
+          <p style="font-size: 15px; color: #ffffff; line-height: 1.6; margin: 0; white-space: pre-wrap;">${newFeedback.comment.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+        </div>
+        <table style="width: 100%; font-size: 13px; color: #d4d4d8; border-collapse: collapse;">
+          <tr><td style="padding: 6px 0; color: #71717a;">Usuario:</td><td style="padding: 6px 0; font-weight: 600;">${newFeedback.userName || 'Visitante'}</td></tr>
+          <tr><td style="padding: 6px 0; color: #71717a;">Correo:</td><td style="padding: 6px 0;">${newFeedback.userEmail ? `<a href="mailto:${newFeedback.userEmail}" style="color: #38bdf8;">${newFeedback.userEmail}</a>` : 'No indicado'}</td></tr>
+          <tr><td style="padding: 6px 0; color: #71717a;">ID Visitante:</td><td style="padding: 6px 0; font-family: monospace;">${newFeedback.userId || 'N/A'}</td></tr>
+          <tr><td style="padding: 6px 0; color: #71717a;">Dispositivo:</td><td style="padding: 6px 0; font-size: 11px; color: #a1a1aa;">${newFeedback.device || 'Web'}</td></tr>
+        </table>
+      </div>
+    `;
+
+    const emailResult = await sendAdminNotificationEmail({
+      subject: emailSubject,
+      html: emailHtml,
+      text: emailText,
+      replyTo: newFeedback.userEmail
+    });
+
+    newFeedback.emailNotificationSent = emailResult.sent;
+    newFeedback.emailProvider = emailResult.provider;
+
+    feedbackList.unshift(newFeedback);
+    await writeFeedbackDb(feedbackList);
+
+    console.log(`[Feedback] Recibido nuevo feedback (${newFeedback.rating}★ [${newFeedback.category}]) | Email enviado: ${emailResult.sent} (${emailResult.provider})`);
+    res.json({ success: true, feedback: newFeedback, emailSent: emailResult.sent, emailProvider: emailResult.provider });
   } catch (error: any) {
     console.error("[Feedback] Error:", error);
     res.status(500).json({ error: error.message || "Error al procesar feedback" });
+  }
+});
+
+app.get("/api/admin/email-status", (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
+  res.json(getEmailConfigurationStatus());
+});
+
+app.post("/api/admin/test-email", async (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
+  }
+  try {
+    const nowStr = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+    const result = await sendAdminNotificationEmail({
+      subject: `✅ Prueba de Notificación de Administrador (${nowStr}) — Tutor de Cuaderno`,
+      text: `Prueba exitosa del sistema de alertas por correo para el administrador (${ADMIN_NOTIFICATION_EMAIL}).\nFecha: ${nowStr}\nTodos los feedbacks y cierres de sesión de usuarios se enviarán automáticamente a esta casilla.`,
+      html: `<div style="font-family: sans-serif; padding: 24px; background: #0f1115; color: #f4f4f5; border-radius: 12px; border: 1px solid #10b981;">
+        <h2 style="color: #10b981; margin-top: 0;">✅ Sistema de Correo Activo</h2>
+        <p>Hola Martín, esta es una prueba de conexión desde el panel de administración de <strong>Tutor de Cuaderno</strong>.</p>
+        <p style="font-size: 13px; color: #a1a1aa;">Destinatario configurado: <strong>${ADMIN_NOTIFICATION_EMAIL}</strong><br/>Fecha: ${nowStr}</p>
+      </div>`
+    });
+    res.json({ success: result.sent, ...result, status: getEmailConfigurationStatus() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Error probando envío de email" });
   }
 });
 
@@ -1386,7 +1663,8 @@ app.get("/api/admin/feedback", (req, res) => {
       averageRating: feedbackList.length > 0 
         ? +(feedbackList.reduce((acc, f) => acc + f.rating, 0) / feedbackList.length).toFixed(1)
         : 0,
-      critiquesCount: feedbackList.filter(f => f.category === 'critique' || f.category === 'bug' || f.rating <= 2).length
+      critiquesCount: feedbackList.filter(f => f.category === 'critique' || f.category === 'bug' || f.rating <= 2).length,
+      emailConfig: getEmailConfigurationStatus()
     });
   } catch (error: any) {
     console.error("[Admin Feedback] Error:", error);
@@ -1394,7 +1672,7 @@ app.get("/api/admin/feedback", (req, res) => {
   }
 });
 
-app.patch("/api/admin/feedback/:id", (req, res) => {
+app.patch("/api/admin/feedback/:id", async (req, res) => {
   if (!verifyAdminRequest(req)) {
     return res.status(403).json({ error: "Acceso denegado: Se requieren permisos de administrador." });
   }
@@ -1409,7 +1687,7 @@ app.patch("/api/admin/feedback/:id", (req, res) => {
 
     if (status && ['new', 'reviewed', 'replied'].includes(status)) {
       feedbackList[index].status = status;
-      writeFeedbackDb(feedbackList);
+      await writeFeedbackDb(feedbackList);
     }
 
     res.json({ success: true, feedback: feedbackList[index] });
@@ -1533,12 +1811,15 @@ Genera un diagnóstico estricto en JSON con:
     }
 
     const sessions = readSessionsDb();
+    const existingIdx = sessions.findIndex(s => s.sessionId === sessionId);
+    const resolvedUserName = userName || (userEmail ? userEmail.split('@')[0] : `Visitante #${(visitorId || '').replace('vis_', '').substring(0, 5)}`);
+
     const newReport: SessionReportItem = {
-      id: `rep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      id: existingIdx !== -1 ? sessions[existingIdx].id : `rep_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       sessionId,
       visitorId: visitorId || 'anon',
       userEmail: userEmail || undefined,
-      userName: userName || (userEmail ? userEmail.split('@')[0] : `Visitante #${(visitorId || '').replace('vis_', '').substring(0, 5)}`),
+      userName: resolvedUserName,
       device: device || 'Web / Android',
       iniciada_en: iniciada_en || new Date().toISOString(),
       finalizada_en: finalizada_en || new Date().toISOString(),
@@ -1546,17 +1827,140 @@ Genera un diagnóstico estricto en JSON con:
       datos_servicio: datos_servicio || {},
       excedente_conductual: excedente_conductual || {},
       analisis_cognitivo: analisisCognitivo,
-      createdAt: new Date().toISOString()
+      createdAt: existingIdx !== -1 ? sessions[existingIdx].createdAt : new Date().toISOString(),
+      emailNotificationSent: existingIdx !== -1 ? sessions[existingIdx].emailNotificationSent : false,
+      emailProvider: existingIdx !== -1 ? sessions[existingIdx].emailProvider : undefined
     };
 
-    sessions.unshift(newReport);
-    if (sessions.length > 200) {
-      sessions.pop();
-    }
-    writeSessionsDb(sessions);
+    // Determinar si la sesión tuvo actividad real o feedback para enviar el reporte al administrador por mail
+    const questionsCount = datos_servicio?.preguntas_respondidas_count || 0;
+    const oralCount = datos_servicio?.examenes_orales_count || 0;
+    const docsCount = datos_servicio?.documentos_leidos_count || 0;
+    const evalsList: any[] = Array.isArray(datos_servicio?.evaluaciones_detalle) ? datos_servicio.evaluaciones_detalle : [];
+    const feedbackInSession: any[] = Array.isArray(datos_servicio?.feedback_enviado) ? datos_servicio.feedback_enviado : [];
+    const filesConsulted: string[] = Array.isArray(datos_servicio?.archivos_consultados) ? datos_servicio.archivos_consultados : [];
 
-    console.log(`[Analytics] Sesión guardada: ${sessionId} (${duracion_segundos}s) - Certeza: ${analisisCognitivo.nivel_certeza}% - Vacilación: ${analisisCognitivo.nivel_vacilacion}%`);
-    res.json({ success: true, report: newReport });
+    const hasMeaningfulActivity =
+      questionsCount > 0 ||
+      oralCount > 0 ||
+      docsCount > 0 ||
+      evalsList.length > 0 ||
+      feedbackInSession.length > 0 ||
+      filesConsulted.length > 0 ||
+      duracion_segundos >= 15;
+
+    const activitySignature = `${questionsCount}:${oralCount}:${docsCount}:${evalsList.length}:${feedbackInSession.length}:${Math.floor(duracion_segundos / 60)}`;
+    const prevDispatch = sessionEmailDispatchHistory.get(sessionId);
+    const shouldSendSessionEmail =
+      hasMeaningfulActivity &&
+      (!prevDispatch || (prevDispatch.lastSignature !== activitySignature && Date.now() - prevDispatch.lastSentAt > 15000));
+
+    if (shouldSendSessionEmail) {
+      sessionEmailDispatchHistory.set(sessionId, { lastSignature: activitySignature, lastSentAt: Date.now() });
+      const formattedEnd = new Date(newReport.finalizada_en).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+      const durationMin = Math.max(1, Math.round(duracion_segundos / 60));
+      const notebookTitle = datos_servicio?.cuaderno_activo || (filesConsulted[0] || 'Sesión General');
+
+      const evalsSummaryText = evalsList.length > 0
+        ? evalsList.map((ev, i) => `  ${i + 1}. [${ev.tipo.toUpperCase()}] ${ev.tema}${ev.calificacion !== undefined ? ` -> Nota: ${ev.calificacion}/100` : ''}${ev.comentario_ia ? ` (${ev.comentario_ia})` : ''}`).join('\n')
+        : '  Sin evaluaciones formales completadas en este bloque.';
+
+      const feedbackSummaryText = feedbackInSession.length > 0
+        ? feedbackInSession.map((fb, i) => `  ${i + 1}. [${fb.rating}/5 ★ - ${fb.category}]: "${fb.comment}"`).join('\n')
+        : '  Sin comentarios manuales adicionales en este cierre.';
+
+      const emailSubject = `📊 Fin de Uso / Feedback Pedagógico: ${resolvedUserName} (${notebookTitle}) — Tutor de Cuaderno`;
+      const emailText = [
+        `REPORTE DE FIN DE USO Y DIAGNÓSTICO DE SESIÓN - TUTOR DE CUADERNO`,
+        `==================================================================`,
+        `Usuario: ${resolvedUserName}`,
+        `Correo: ${userEmail || 'Visitante sin correo'}`,
+        `Cuaderno Activo: ${notebookTitle}`,
+        `Duración: ${duracion_segundos} seg (~${durationMin} min)`,
+        `Finalizado (AR): ${formattedEnd}`,
+        `Dispositivo: ${newReport.device}`,
+        ``,
+        `RESUMEN DE ACTIVIDAD:`,
+        `- Preguntas respondidas: ${questionsCount}`,
+        `- Exámenes orales: ${oralCount}`,
+        `- Calificación promedio: ${datos_servicio?.promedio_calificacion !== undefined ? `${datos_servicio.promedio_calificacion}/100` : 'N/A'}`,
+        `- Documentos leídos: ${docsCount}`,
+        `- Archivos consultados: ${filesConsulted.join(', ') || 'Ninguno'}`,
+        ``,
+        `DETALLE DE EVALUACIONES / TUTORÍA:`,
+        evalsSummaryText,
+        ``,
+        `FEEDBACK ENVIADO EN LA SESIÓN:`,
+        feedbackSummaryText,
+        ``,
+        `DIAGNÓSTICO PSICOPEDAGÓGICO IA:`,
+        `- Estado / Diagnóstico: ${analisisCognitivo.diagnostico_emocional}`,
+        `- Certeza: ${analisisCognitivo.nivel_certeza}% | Vacilación: ${analisisCognitivo.nivel_vacilacion}% | Fatiga: ${analisisCognitivo.indice_fatiga}%`,
+        `- Resumen Ejecutivo: ${analisisCognitivo.resumen_ejecutivo}`,
+        `- Recomendación Pedagógica: ${analisisCognitivo.recomendacion_pedagogica}`,
+        `==================================================================`
+      ].join('\n');
+
+      const emailHtml = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 620px; margin: 0 auto; padding: 26px; background-color: #0f1115; color: #f4f4f5; border-radius: 16px; border: 1px solid #10b98140;">
+          <div style="border-bottom: 1px solid #27272a; padding-bottom: 14px; margin-bottom: 18px;">
+            <span style="font-size: 17px; font-weight: 800; color: #10b981;">📊 Reporte de Fin de Uso &bull; Tutor de Cuaderno AI</span>
+            <div style="font-size: 12px; color: #a1a1aa; margin-top: 4px;">Usuario: <strong style="color: #fff;">${resolvedUserName}</strong> ${userEmail ? `(${userEmail})` : ''} &bull; ${formattedEnd}</div>
+          </div>
+
+          <div style="background-color: #181920; border-radius: 12px; padding: 16px; margin-bottom: 16px; border: 1px solid #27272a;">
+            <div style="font-size: 12px; color: #a1a1aa; text-transform: uppercase; font-weight: 700; margin-bottom: 8px;">Cuaderno: <span style="color: #fbbf24;">${notebookTitle}</span></div>
+            <div style="font-size: 13px; color: #e4e4e7; line-height: 1.6;">
+              ⏱️ <strong>Duración:</strong> ${duracion_segundos}s (~${durationMin} min) &nbsp;|&nbsp;
+              📝 <strong>Preguntas:</strong> ${questionsCount} &nbsp;|&nbsp;
+              🎙️ <strong>Exámenes Orales:</strong> ${oralCount} &nbsp;|&nbsp;
+              🏆 <strong>Promedio:</strong> ${datos_servicio?.promedio_calificacion !== undefined ? `${datos_servicio.promedio_calificacion}/100` : 'S/C'}
+            </div>
+          </div>
+
+          ${evalsList.length > 0 ? `
+          <div style="background-color: #14151a; border-left: 4px solid #38bdf8; padding: 14px; border-radius: 8px; margin-bottom: 16px;">
+            <div style="font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; margin-bottom: 6px;">Evaluaciones y Sesiones Realizadas:</div>
+            ${evalsList.map(ev => `<div style="font-size: 13px; color: #e4e4e7; margin-bottom: 6px;">&bull; <strong>[${ev.tipo.toUpperCase()}] ${ev.tema}</strong>${ev.calificacion !== undefined ? ` — <span style="color: #34d399; font-weight: bold;">${ev.calificacion}/100</span>` : ''}${ev.comentario_ia ? `<br/><span style="font-size: 12px; color: #a1a1aa;">${ev.comentario_ia}</span>` : ''}</div>`).join('')}
+          </div>` : ''}
+
+          ${feedbackInSession.length > 0 ? `
+          <div style="background-color: #14151a; border-left: 4px solid #f59e0b; padding: 14px; border-radius: 8px; margin-bottom: 16px;">
+            <div style="font-size: 11px; text-transform: uppercase; color: #f59e0b; font-weight: 700; margin-bottom: 6px;">Feedback directo dejado por el usuario:</div>
+            ${feedbackInSession.map(fb => `<div style="font-size: 13px; color: #fff; margin-bottom: 6px;">⭐ <strong>${fb.rating}/5 (${fb.category}):</strong> "${fb.comment}"</div>`).join('')}
+          </div>` : ''}
+
+          <div style="background-color: #14151a; border-left: 4px solid #10b981; padding: 14px; border-radius: 8px; margin-bottom: 14px;">
+            <div style="font-size: 11px; text-transform: uppercase; color: #10b981; font-weight: 700; margin-bottom: 6px;">Diagnóstico Cognitivo y Pedagógico IA:</div>
+            <p style="font-size: 13px; color: #ffffff; margin: 0 0 8px 0;"><strong>${analisisCognitivo.diagnostico_emocional}</strong> (Certeza: ${analisisCognitivo.nivel_certeza}% &bull; Vacilación: ${analisisCognitivo.nivel_vacilacion}% &bull; Fatiga: ${analisisCognitivo.indice_fatiga}%)</p>
+            <p style="font-size: 13px; color: #d4d4d8; margin: 0 0 8px 0;">${analisisCognitivo.resumen_ejecutivo}</p>
+            <p style="font-size: 12px; color: #fbbf24; margin: 0;">💡 <strong>Recomendación:</strong> ${analisisCognitivo.recomendacion_pedagogica}</p>
+          </div>
+        </div>
+      `;
+
+      const emailRes = await sendAdminNotificationEmail({
+        subject: emailSubject,
+        html: emailHtml,
+        text: emailText,
+        replyTo: userEmail
+      });
+      newReport.emailNotificationSent = emailRes.sent;
+      newReport.emailProvider = emailRes.provider;
+    }
+
+    if (existingIdx !== -1) {
+      sessions[existingIdx] = newReport;
+    } else {
+      sessions.unshift(newReport);
+      if (sessions.length > 200) {
+        sessions.pop();
+      }
+    }
+    await writeSessionsDb(sessions);
+
+    console.log(`[Analytics] Sesión guardada: ${sessionId} (${duracion_segundos}s) - Certeza: ${analisisCognitivo.nivel_certeza}% - Email enviado: ${newReport.emailNotificationSent}`);
+    res.json({ success: true, report: newReport, emailSent: newReport.emailNotificationSent });
   } catch (err: any) {
     console.error("[Analytics] Error in session-end:", err);
     res.status(500).json({ error: err.message || "Error registrando sesión" });
@@ -2267,25 +2671,33 @@ ${notesMemoryBlock}
             }
           };
 
+          const liveModels = [
+            process.env.GEMINI_LIVE_MODEL,
+            "gemini-2.5-flash-native-audio-latest",
+            "gemini-3.1-flash-live-preview",
+            "gemini-2.5-flash-native-audio-preview-09-2025",
+            "gemini-2.0-flash-live-001",
+            "gemini-2.0-flash-exp"
+          ].filter(Boolean) as string[];
+
           const connectLive = async () => {
-            try {
-              const session = await ai.live.connect({
-                model: "gemini-3.8-live",
-                config: liveConfig,
-                callbacks: liveCallbacks
-              });
-              liveSession = session;
-              return session;
-            } catch (liveErr) {
-              console.warn("gemini-3.8-live connection failed, falling back to gemini-3.1-flash-live-preview:", liveErr);
-              const session = await ai.live.connect({
-                model: "gemini-3.1-flash-live-preview",
-                config: liveConfig,
-                callbacks: liveCallbacks
-              });
-              liveSession = session;
-              return session;
+            let lastLiveErr: any = null;
+            for (const modelName of liveModels) {
+              try {
+                const session = await ai.live.connect({
+                  model: modelName,
+                  config: liveConfig,
+                  callbacks: liveCallbacks
+                });
+                liveSession = session;
+                console.log(`[Gemini Live] Conectado exitosamente con modelo: ${modelName}`);
+                return session;
+              } catch (liveErr: any) {
+                console.warn(`[Gemini Live] Falló conexión con ${modelName}:`, liveErr?.message || liveErr);
+                lastLiveErr = liveErr;
+              }
             }
+            throw lastLiveErr || new Error("No se pudo conectar con ningún modelo de Gemini Live");
           };
 
           liveSessionPromise = connectLive().then((session) => {
