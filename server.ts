@@ -1056,24 +1056,25 @@ async function sendAdminNotificationEmail(params: {
     try {
       const nodemailer = await import("nodemailer");
       const isGmail = smtpHost.includes("gmail") || smtpUser.includes("@gmail.com");
+      const port = parseInt(process.env.SMTP_PORT || (isGmail ? "587" : "587"), 10);
+      const isSecurePort = port === 465;
       
-      const transportConfig: any = isGmail
-        ? {
-            service: "gmail",
-            auth: {
-              user: smtpUser,
-              pass: cleanPass
-            }
-          }
-        : {
-            host: smtpHost,
-            port: parseInt(process.env.SMTP_PORT || "587", 10),
-            secure: process.env.SMTP_SECURE === "true" || process.env.SMTP_PORT === "465",
-            auth: {
-              user: smtpUser,
-              pass: cleanPass
-            }
-          };
+      const transportConfig: any = {
+        host: isGmail ? "smtp.gmail.com" : smtpHost,
+        port,
+        secure: isSecurePort,
+        requireTLS: !isSecurePort,
+        connectionTimeout: 9000,
+        greetingTimeout: 9000,
+        socketTimeout: 12000,
+        auth: {
+          user: smtpUser,
+          pass: cleanPass
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
+      };
 
       const transporter = nodemailer.createTransport(transportConfig);
 
