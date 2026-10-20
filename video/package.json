@@ -1,0 +1,17 @@
+{
+  "name": "tutor-video-tutorial",
+  "version": "1.0.0",
+  "description": "Video tutorial programático del Tutor Académico generado con Remotion",
+  "scripts": {
+    "start": "remotion preview src/Root.tsx",
+    "build": "remotion render src/Root.tsx TutorWalkthrough out/video-tutorial.mp4",
+    "render": "remotion render src/Root.tsx TutorWalkthrough out/video-tutorial.mp4"
+  },
+  "dependencies": {
+    "@remotion/transitions": "^4.0.0",
+    "lucide-react": "^1.16.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "remotion": "^4.0.0"
+  }
+}
