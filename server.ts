@@ -2829,16 +2829,14 @@ Hazle una pregunta sobre el primer tema. Si responde incorrectamente, dale pista
 Cuando el usuario responda correctamente a una pregunta sobre un tema, DEBES llamar a la función 'unlockTopic' con el ID de ese tema para desbloquear su imagen en la pantalla. Luego, felicítalo y pasa a hacerle una pregunta sobre el siguiente tema.
 
 DESPLIEGUE VISUAL DE IDEAS CLAVE Y PALABRAS GUÍA EN PANTALLA:
-Cuando expliques un concepto o formules una pregunta al usuario, llama a la función 'displayKeyConcept':
+Siempre que expliques un concepto, des una pista o le formules una pregunta al usuario, DEBES llamar a la función 'displayKeyConcept':
 1. En 'keyConcept', coloca la palabra clave o la pregunta resumida en una frase muy corta (máximo 5-7 palabras).
-2. En 'suggestedKeywords', incluye de 2 a 5 palabras clave que el estudiante debería mencionar.
-3. MUY IMPORTANTE: Inmediatamente después de llamar a 'displayKeyConcept' o 'unlockTopic', DEBES HABLAR EN VOZ ALTA al usuario sin quedarte en silencio.
+2. CADA VEZ QUE LE FORMULES UNA PREGUNTA, DEBES incluir obligatoriamente el parámetro 'suggestedKeywords' con 2 a 5 palabras o términos clave indispensables que el estudiante debería mencionar o responder oralmente. Esto le servirá como una guía visual en pantalla para su respuesta.
+3. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
 
-REGLA DE TOMA DE TURNO ÁGIL Y FLUIDA:
-1. Al iniciar la sesión, saluda brevemente con entusiasmo y haz de inmediato la primera pregunta sobre el primer tema.
-2. En cuanto el estudiante responda o haga una pausa de silencio de 1 a 2 segundos tras hablar, TOMA EL TURNO Y RESPONDE DE INMEDIATO en voz alta. NUNCA te quedes callado esperando más tiempo. Si la respuesta del usuario fue muy breve o incompleta, evalúala amablemente o dale una pista directa en voz alta para que continúe.
+IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni evalúes su respuesta todavía. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
 
-Mantén tus respuestas concisas (2 a 4 oraciones) y dinámicas en español.
+Mantén tus respuestas concisas y adecuadas para una conversación hablada en español. Sé proactivo haciendo preguntas si el usuario se queda callado por mucho tiempo sin haber empezado a hablar.
 
 REGLA DE METADATOS:
 Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de portada. Concéntrate exclusivamente en el contenido temático sustantivo.
@@ -2896,7 +2894,7 @@ Las 5 preguntas son:
 ${questions ? questions.map((q: string, i: number) => `Pregunta ${i + 1}: ${q}`).join('\n') : ''}
 
 REGLAS DE EVALUACIÓN Y TOMA DE TURNO:
-1. Al iniciar, saluda al estudiante brevemente y formula con claridad la PREGUNTA 1 en voz alta.
+1. Al iniciar, saluda al estudiante brevemente y formula con claridad la PREGUNTA 1.
 2. Cuando el estudiante hable ante el micrófono respondiendo a la pregunta:
    - En cuanto el estudiante termine de hablar o haga una breve pausa de 1 a 2 segundos (o si indica que terminó), TOMA EL TURNO DE INMEDIATO. NO TE QUEDES EN SILENCIO NI ESPERES MÁS TIEMPO.
    - DEBES llamar obligatoriamente a la función 'submitOralAnswer' con los datos de evaluación:
@@ -2906,12 +2904,12 @@ REGLAS DE EVALUACIÓN Y TOMA DE TURNO:
      * 'userAnswerTranscript': resumen breve de lo que dijo el estudiante.
      * 'strengths': aciertos principales.
      * 'toImprove': detalles que faltaron.
-   - Inmediatamente tras ejecutar 'submitOralAnswer', HABLA EN VOZ ALTA dándole tu devolución y formula la SIGUIENTE PREGUNTA.
+   - Tras ejecutar 'submitOralAnswer', dile brevemente tu evaluación y formula inmediatamente la SIGUIENTE PREGUNTA.
 3. Repite este ciclo de manera fluida y dinámica para las 5 preguntas.
 4. Al evaluar la pregunta 5 (índice 4), haz una síntesis de cierre con su nota global y felicítalo.
 
 DESPLIEGUE DE IDEAS CLAVE:
-Al hacer cada pregunta, llama a 'displayKeyConcept' con la idea principal y las palabras guía en 'suggestedKeywords', e inmediatamente habla en voz alta.
+Al hacer cada pregunta, llama a 'displayKeyConcept' con la idea principal y las palabras guía en 'suggestedKeywords'.
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
@@ -2926,17 +2924,15 @@ Mantén tus intervenciones habladas concisas para mantener un diálogo dinámico
             ]
           }];
 
-          systemInstruction = `Eres un tutor de estudio experto, cálido y dinámico. El usuario ha subido un documento y quiere estudiar dialogando contigo por voz en tiempo real.
-Explícale los conceptos con claridad, responde sus dudas y hazle preguntas breves para comprobar su comprensión.
+          systemInstruction = `Eres un tutor de estudio experto y amigable. El usuario ha subido un documento y quiere estudiar dialogando contigo.
+Explícale los conceptos, responde sus dudas y hazle preguntas para comprobar su comprensión si lo ves oportuno.
 
 DESPLIEGUE VISUAL DE IDEAS CLAVE EN PANTALLA:
-Cuando expliques un concepto o hagas una pregunta importante, llama a la función 'displayKeyConcept' enviando la idea principal resumida en 2 a 6 palabras. MUY IMPORTANTE: Inmediatamente después de llamar a 'displayKeyConcept', DEBES HABLAR EN VOZ ALTA al estudiante sin quedarte en silencio.
+Siempre que expliques un concepto, des una respuesta o hagas una observación verbal, DEBES invocar frecuentemente la función 'displayKeyConcept' enviando la palabra clave o la idea principal resumida en una frase muy corta (2 a 6 palabras). Esto es fundamental para que el usuario vea escritas en pantalla las palabras o frases principales en tiempo real mientras te escucha hablar. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
 
-REGLA DE TOMA DE TURNO ÁGIL Y FLUIDA:
-1. Al iniciar la sesión, saluda de inmediato con entusiasmo, menciona de qué trata el documento cargado y pregúntale por qué punto quiere empezar o proponle el primer concepto clave.
-2. En cuanto el usuario termine una frase o haga una pausa de 1 a 2 segundos, RESPONDE DE INMEDIATO en voz alta. NUNCA te quedes en silencio esperando.
+IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni asumas que ha terminado. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
 
-Mantén tus respuestas habladas concisas (2 a 4 oraciones) y conversacionales en español.
+Mantén tus respuestas concisas y adecuadas para una conversación hablada en español. Sé proactivo haciendo preguntas si el usuario se queda callado por mucho tiempo sin haber empezado a hablar.
 
 REGLA DE METADATOS:
 Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de portada. Concéntrate exclusivamente en el contenido temático sustantivo de la materia.
@@ -2949,7 +2945,7 @@ ${notesMemoryBlock}
 
         try {
           const ai = getAiClient(customKey);
-          const baseLiveConfig = {
+          const liveConfig = {
             responseModalities: [Modality.AUDIO],
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
@@ -2959,7 +2955,7 @@ ${notesMemoryBlock}
           };
           const liveCallbacks = {
             onopen: () => {
-              // Handled after session assignment in connectLive
+              safeSend({ type: 'open' });
             },
             onmessage: (serverMessage: LiveServerMessage) => {
               safeSend({ type: 'message', data: serverMessage });
@@ -2976,39 +2972,23 @@ ${notesMemoryBlock}
           const liveModels = [
             process.env.GEMINI_LIVE_MODEL,
             "gemini-2.5-flash-native-audio-latest",
+            "gemini-3.1-flash-live-preview",
             "gemini-2.5-flash-native-audio-preview-09-2025",
             "gemini-2.0-flash-live-001",
             "gemini-2.0-flash-exp"
           ].filter(Boolean) as string[];
 
-          const dispatchInputToSession = (session: any, packet: any) => {
-            if (!packet) return;
-            if (packet.text) {
-              session.sendClientContent({
-                turns: [{ role: 'user', parts: [{ text: packet.text }] }],
-                turnComplete: true
-              });
-            } else {
-              session.sendRealtimeInput(packet);
-            }
-          };
-
           const connectLive = async () => {
             let lastLiveErr: any = null;
             for (const modelName of liveModels) {
               try {
-                const modelConfig: any = { ...baseLiveConfig };
-                if (modelName.includes('2.5') || modelName.includes('3.')) {
-                  modelConfig.thinkingConfig = { thinkingBudget: 0 };
-                }
                 const session = await ai.live.connect({
                   model: modelName,
-                  config: modelConfig,
+                  config: liveConfig,
                   callbacks: liveCallbacks
                 });
                 liveSession = session;
                 console.log(`[Gemini Live] Conectado exitosamente con modelo: ${modelName}`);
-                safeSend({ type: 'open' });
                 return session;
               } catch (liveErr: any) {
                 console.warn(`[Gemini Live] Falló conexión con ${modelName}:`, liveErr?.message || liveErr);
@@ -3023,9 +3003,7 @@ ${notesMemoryBlock}
               const buffered = inputBuffer.shift();
               try {
                 if (buffered.type === 'realtimeInput') {
-                  dispatchInputToSession(session, buffered.data);
-                } else if (buffered.type === 'clientContent') {
-                  session.sendClientContent(buffered.data);
+                  session.sendRealtimeInput(buffered.data);
                 } else if (buffered.type === 'toolResponse') {
                   session.sendToolResponse(buffered.data);
                 }
@@ -3046,29 +3024,12 @@ ${notesMemoryBlock}
       } else if (parsed.type === 'realtimeInput') {
         if (liveSession) {
           try {
-            if (parsed.data && parsed.data.text) {
-              liveSession.sendClientContent({
-                turns: [{ role: 'user', parts: [{ text: parsed.data.text }] }],
-                turnComplete: true
-              });
-            } else {
-              liveSession.sendRealtimeInput(parsed.data);
-            }
+            liveSession.sendRealtimeInput(parsed.data);
           } catch (sendErr) {
             console.warn("Error sending realtime input to Gemini Live:", sendErr);
           }
         } else if (liveSessionPromise) {
           inputBuffer.push({ type: 'realtimeInput', data: parsed.data });
-        }
-      } else if (parsed.type === 'clientContent') {
-        if (liveSession) {
-          try {
-            liveSession.sendClientContent(parsed.data);
-          } catch (sendErr) {
-            console.warn("Error sending clientContent to Gemini Live:", sendErr);
-          }
-        } else if (liveSessionPromise) {
-          inputBuffer.push({ type: 'clientContent', data: parsed.data });
         }
       } else if (parsed.type === 'toolResponse') {
         if (liveSession) {

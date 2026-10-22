@@ -784,7 +784,6 @@ export function OralEvaluatorSession({
             recorderRef.current?.stop();
             recorderRef.current = new AudioRecorder(
               (base64) => {
-                if (playerRef.current?.isPlaying()) return;
                 socketPromise.then(s => {
                   s.sendRealtimeInput({
                     audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -801,10 +800,10 @@ export function OralEvaluatorSession({
                       clearTimeout(silenceTimeoutRef.current);
                       silenceTimeoutRef.current = null;
                     }
-                  } else if (vol <= 0.03 && userSpokeRecentlyRef.current && !isSpeaking && !playerRef.current?.isPlaying()) {
+                  } else if (vol <= 0.03 && userSpokeRecentlyRef.current && !isSpeaking) {
                     if (!silenceTimeoutRef.current) {
                       silenceTimeoutRef.current = setTimeout(() => {
-                        if (userSpokeRecentlyRef.current && !isSpeaking && !playerRef.current?.isPlaying() && isMounted) {
+                        if (userSpokeRecentlyRef.current && !isSpeaking && isMounted) {
                           userSpokeRecentlyRef.current = false;
                           socketPromise.then(s => {
                             try {
@@ -817,13 +816,6 @@ export function OralEvaluatorSession({
                       }, 2200);
                     }
                   }
-                }
-              },
-              () => {
-                if (!playerRef.current?.isPlaying()) {
-                  socketPromise.then(s => {
-                    s.sendRealtimeInput({ audioStreamEnd: true });
-                  });
                 }
               }
             );
