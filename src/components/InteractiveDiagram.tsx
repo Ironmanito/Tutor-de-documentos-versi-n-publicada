@@ -101,9 +101,14 @@ export const InteractiveDiagram: React.FC<InteractiveDiagramProps> = ({
   const fetchDiagram = async (diffToUse: DifficultyLevel = difficulty) => {
     setIsLoading(true);
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const savedKey = localStorage.getItem('user_gemini_api_key');
+      if (savedKey) {
+        headers['x-gemini-api-key'] = savedKey;
+      }
       const res = await fetch('/api/generate-diagram', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ studyText, title: activeTitle, difficulty: diffToUse })
       });
       const data = await res.json();

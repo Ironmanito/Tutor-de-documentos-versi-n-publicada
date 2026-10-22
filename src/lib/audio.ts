@@ -56,6 +56,11 @@ export class AudioStreamPlayer {
     }
   }
 
+  isPlaying(): boolean {
+    if (!this.context || this.context.state === 'closed') return false;
+    return this.nextTime > this.context.currentTime + 0.05;
+  }
+
   interrupt() {
     try {
       if (this.context && this.context.state !== 'closed') {
@@ -87,14 +92,30 @@ export class AudioRecorder {
   private source: MediaStreamAudioSourceNode | null = null;
   private smoothedVolume: number = 0;
   private isStopped: boolean = false;
+  private hangoverFrames: number = 0;
+  private hadSpeechInTurn: boolean = false;
+  private preRollBase64: string | null = null;
+  private silenceFrameBase64: string = '';
 
   constructor(
     private onData: (base64: string) => void,
-    private onVolume?: (volume: number) => void
-  ) {}
+    private onVolume?: (volume: number) => void,
+    private onSpeechEnd?: () => void
+  ) {
+    // Pre-compute a 4096-sample pure digital silence frame
+    const zeroBytes = new Uint8Array(4096 * 2);
+    let bin = '';
+    for (let i = 0; i < zeroBytes.byteLength; i++) {
+      bin += String.fromCharCode(0);
+    }
+    this.silenceFrameBase64 = btoa(bin);
+  }
 
   async start() {
     this.isStopped = false;
+    this.hangoverFrames = 0;
+    this.hadSpeechInTurn = false;
+    this.preRollBase64 = null;
     this.stream = await navigator.mediaDevices.getUserMedia({ 
       audio: {
         echoCancellation: true,
@@ -151,7 +172,31 @@ export class AudioRecorder {
       for (let i = 0; i < bytes.byteLength; i++) {
         binary += String.fromCharCode(bytes[i]);
       }
-      this.onData(btoa(binary));
+      const frameBase64 = btoa(binary);
+
+      // Voice Activity Detection with Noise Gate & Clean Silence Squelch
+      const isVoiceActive = rms > 0.0085;
+      if (isVoiceActive) {
+        if (!this.hadSpeechInTurn && this.preRollBase64) {
+          this.onData(this.preRollBase64);
+        }
+        this.hadSpeechInTurn = true;
+        this.hangoverFrames = 5; // ~1.28s hangover after speech stops
+        this.onData(frameBase64);
+      } else if (this.hangoverFrames > 0) {
+        this.hangoverFrames--;
+        // Send pure digital silence during tail so server VAD cleanly detects end-of-turn
+        this.onData(this.silenceFrameBase64);
+        if (this.hangoverFrames === 0 && this.hadSpeechInTurn) {
+          this.hadSpeechInTurn = false;
+          if (this.onSpeechEnd) {
+            this.onSpeechEnd();
+          }
+        }
+      } else {
+        // Store pre-roll frame so the very start of next utterance is never clipped
+        this.preRollBase64 = frameBase64;
+      }
     };
 
     this.source.connect(this.processor);

@@ -407,7 +407,7 @@ export default function App() {
 
     fetch('/api/generate-diagram', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getFetchHeaders(),
       body: JSON.stringify({
         studyText: effectiveText,
         title: activeStudyTitle || (files[0]?.name?.replace(/\.[^/.]+$/, '')) || 'Cuaderno de Estudio',
@@ -5706,6 +5706,8 @@ function StudySession({
             recorderRef.current?.stop();
             recorderRef.current = new AudioRecorder(
               (base64) => {
+                // Evitar retroalimentación del altavoz mientras el tutor está hablando
+                if (playerRef.current?.isPlaying()) return;
                 sessionPromise.then(s => {
                   s.sendRealtimeInput({
                     audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -5715,6 +5717,14 @@ function StudySession({
               (vol) => {
                 if (isMounted) {
                   setUserVolume(vol);
+                }
+              },
+              () => {
+                // Fin de frase detectado por silencio limpio -> señalar fin de turno a Gemini Live
+                if (!playerRef.current?.isPlaying()) {
+                  sessionPromise.then(s => {
+                    s.sendRealtimeInput({ audioStreamEnd: true });
+                  });
                 }
               }
             );
@@ -5726,6 +5736,14 @@ function StudySession({
                 setIsConnecting(false);
                 setIsReconnecting(false);
               }
+            });
+
+            // Impulso inicial para que el tutor tome la palabra de inmediato sin quedarse callado al inicio
+            const firstTopic = topics && topics[0] ? topics[0].title : 'el primer tema del documento';
+            sessionPromise.then(s => {
+              s.sendRealtimeInput({
+                text: `Hola tutor. Ya estoy conectado y listo para empezar. Salúdame brevemente en voz alta y hazme la primera pregunta sobre "${firstTopic}".`
+              });
             });
           },
           onmessage: (message: any) => {
@@ -5744,7 +5762,7 @@ function StudySession({
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Tema desbloqueado en la interfaz exitosamente." }
+                      response: { result: "Tema desbloqueado en la interfaz. Continúa hablándole en voz alta al estudiante de inmediato." }
                     });
                   } else if (call.name === 'displayKeyConcept') {
                     const args = call.args as any;
@@ -5762,7 +5780,7 @@ function StudySession({
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Palabra o idea principal mostrada en pantalla correctamente." }
+                      response: { result: "Idea principal mostrada en pantalla. Ahora continúa hablándole en voz alta al estudiante de inmediato." }
                     });
                   }
                 }
@@ -5774,10 +5792,13 @@ function StudySession({
               }
             }
 
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio) {
-              setIsSpeaking(true);
-              playerRef.current?.addPCM16(base64Audio);
+            const parts = message.serverContent?.modelTurn?.parts || [];
+            for (const part of parts) {
+              const base64Audio = part?.inlineData?.data;
+              if (base64Audio) {
+                setIsSpeaking(true);
+                playerRef.current?.addPCM16(base64Audio);
+              }
             }
             
             if (message.serverContent?.interrupted) {
@@ -6279,6 +6300,8 @@ function FreeStudySession({
             recorderRef.current?.stop();
             recorderRef.current = new AudioRecorder(
               (base64) => {
+                // Evitar retroalimentación del altavoz mientras el tutor está hablando
+                if (playerRef.current?.isPlaying()) return;
                 sessionPromise.then(s => {
                   s.sendRealtimeInput({
                     audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -6288,6 +6311,14 @@ function FreeStudySession({
               (vol) => {
                 if (isMounted) {
                   setUserVolume(vol);
+                }
+              },
+              () => {
+                // Fin de frase detectado por silencio limpio -> señalar fin de turno a Gemini Live
+                if (!playerRef.current?.isPlaying()) {
+                  sessionPromise.then(s => {
+                    s.sendRealtimeInput({ audioStreamEnd: true });
+                  });
                 }
               }
             );
@@ -6299,6 +6330,13 @@ function FreeStudySession({
                 setIsConnecting(false);
                 setIsReconnecting(false);
               }
+            });
+
+            // Impulso inicial para que el tutor salude de inmediato al conectar
+            sessionPromise.then(s => {
+              s.sendRealtimeInput({
+                text: `Hola tutor. Ya estoy conectado para estudiar el documento en diálogo libre. Salúdame brevemente en voz alta y mencióname el primer concepto principal para arrancar.`
+              });
             });
           },
           onmessage: (message: any) => {
@@ -6325,7 +6363,7 @@ function FreeStudySession({
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Palabra o idea principal mostrada en pantalla correctamente." }
+                      response: { result: "Idea principal mostrada en pantalla. Ahora continúa hablándole en voz alta al estudiante de inmediato." }
                     });
                   }
                 }
@@ -6337,10 +6375,13 @@ function FreeStudySession({
               }
             }
 
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio) {
-              setIsSpeaking(true);
-              playerRef.current?.addPCM16(base64Audio);
+            const parts = message.serverContent?.modelTurn?.parts || [];
+            for (const part of parts) {
+              const base64Audio = part?.inlineData?.data;
+              if (base64Audio) {
+                setIsSpeaking(true);
+                playerRef.current?.addPCM16(base64Audio);
+              }
             }
             
             if (message.serverContent?.interrupted) {

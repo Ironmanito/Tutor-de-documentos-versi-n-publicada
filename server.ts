@@ -2211,11 +2211,20 @@ function generateFallbackQuiz(studyText: string) {
     const keyWord = rawKeyWord.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g,"");
     const maskedSentence = words.map((w, idx) => idx === keyWordIndex ? "________" : w).join(' ');
 
+    const allDocWords = Array.from(new Set(
+      cleanSentences.join(' ').split(/\s+/)
+        .map(w => w.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, ''))
+        .filter(w => w.length >= 6 && w.toLowerCase() !== keyWord.toLowerCase())
+    ));
+
+    const d1 = allDocWords[(i * 3) % (allDocWords.length || 1)] || "Estructura";
+    const d2 = allDocWords[(i * 3 + 1) % (allDocWords.length || 1)] || "Proceso";
+    const d3 = allDocWords[(i * 3 + 2) % (allDocWords.length || 1)] || "Variable";
+
     const distractors = [
-      "Una hipótesis secundaria no corroborada por el autor",
-      "Un concepto complementario de la sección analizada",
-      "Un postulado teórico alternativo en desuso",
-      "Una definición general aplicable a otros escenarios"
+      d1.charAt(0).toUpperCase() + d1.slice(1),
+      d2.charAt(0).toUpperCase() + d2.slice(1),
+      d3.charAt(0).toUpperCase() + d3.slice(1)
     ];
 
     const correctOption = keyWord.charAt(0).toUpperCase() + keyWord.slice(1);
@@ -2232,21 +2241,6 @@ function generateFallbackQuiz(studyText: string) {
       options: options,
       correctIndex: correctIndex,
       explanation: `Basado en la lectura: "${sentence}". La respuesta idónea es "${correctOption}".`
-    });
-  }
-
-  while (quiz.length < 5) {
-    const idx = quiz.length + 1;
-    quiz.push({
-      question: `¿Cuál es el propósito central del tema de estudio número ${idx}?`,
-      options: [
-        "Analizar críticamente las fuentes y comprender las ideas principales descritas en los documentos.",
-        "Memorizar los términos sin prestar atención a su significado o contexto práctico.",
-        "Reemplazar por completo el contenido original con suposiciones personales o intuitivas.",
-        "Ignorar las explicaciones del tutor y estudiar exclusivamente de resúmenes externos."
-      ],
-      correctIndex: 0,
-      explanation: "El objetivo de un tutor dinámico interactivo y del plan de estudios es facilitar el análisis crítico y la asimilación real de las ideas principales."
     });
   }
 
@@ -2333,25 +2327,29 @@ app.post("/api/generate-diagram", async (req, res) => {
 
 ${diffPromptDirectives}
 
-REGLAS ESTRUCTURALES:
-1. Crea un nodo central que sintetice el núcleo temático del texto.
-2. Identifica entre 4 y 6 nodos secundarios conectados (conceptos clave, procesos, causas/efectos o aplicaciones prácticas).
-3. Cada nodo debe incluir:
-   - "label": Título sintético y memorable (2 a 4 palabras).
-   - "emoji": Emoji representativo de la disciplina (ej. ⚡, 🧬, 🏛️, 🧠, ⚖️, 🔬, 📊, 🌿).
-   - "shortDesc": Definición académica formal y concisa (1 a 2 oraciones).
-   - "practicalExplanation": Explicación con una analogía clara o caso práctico de la vida real ("En la práctica, esto funciona como...").
-   - "funFact": Un dato clave, curiosidad histórica o aplicación técnica relevante.
+REGLAS ESTRUCTURALES Y DE ANCLAJE ESTRICTO AL TEXTO:
+1. Crea un nodo central que sintetice el núcleo temático real del documento subido.
+2. Identifica entre 4 y 6 nodos secundarios conectados (conceptos clave, autores, procesos, causas/efectos o tesis centrales del texto).
+3. PROHIBIDO INVENTAR O HACER PREGUNTAS GENÉRICAS: Tanto los títulos ("label"), las definiciones ("shortDesc"), las explicaciones prácticas ("practicalExplanation") como las preguntas ("quickQuiz") DEBEN basarse 100% en lo que dice explícitamente el texto subido.
+4. En cada "quickQuiz", la pregunta ("question") debe evaluar un dato, argumento, definición, autor o relación conceptual específica que aparezca en el texto para ese nodo, y las 3 opciones ("options") deben ser específicas del tema (nunca metas frases vacías como "Es un elemento accesorio descartable" o "¿Cuál es el rol de este principio?").
+5. Ignora encabezados administrativos como "Dossier", nombres de profesores, cátedras o fechas de entrega.
+6. Cada nodo debe incluir:
+   - "label": Título sintético del concepto del texto (2 a 5 palabras).
+   - "emoji": Emoji representativo (ej. ⚡, 🧬, 🏛️, 🧠, ⚖️, 🔬, 📊, 🌿).
+   - "shortDesc": Definición académica precisa según el texto (1 a 2 oraciones).
+   - "practicalExplanation": Explicación clara o ejemplo aplicado basado en el texto ("En la práctica, según el autor...").
+   - "funFact": Dato clave, cita o implicación importante mencionada en el documento.
    - "category": 'central' | 'clave' | 'proceso' | 'aplicacion' | 'teoria'
    - "color": Un color temático ('#10b981', '#38bdf8', '#fbbf24', '#a855f7', '#f43f5e', '#f97316').
-4. Define las conexiones ("connections") con una etiqueta relacional ("label") precisa (ej. "fundamenta", "desencadena", "se compone de", "aplica en", "regula").
-5. Agrega para cada nodo un "quickQuiz": { "question": "¿...?", "options": ["A", "B", "C"], "correctIndex": 0, "hint": "Pista del Mentor..." } ajustado a la dificultad elegida para ganar gemas 💎.
+7. Define las conexiones ("connections") con una etiqueta relacional ("label") precisa.
+8. Agrega para cada nodo un "quickQuiz": { "question": "¿...?", "options": ["Opción A", "Opción B", "Opción C"], "correctIndex": 0, "hint": "Pista basada en el texto..." } verificando que correctIndex (0, 1 o 2) señale la respuesta verdadera según el texto.
 
 Título del cuaderno: ${title || 'Apunte de Estudio'}
-Texto:
-${cleanText.substring(0, 10000)}`,
+Texto del documento:
+${cleanText.substring(0, 28000)}`,
       config: {
-        systemInstruction: "Eres un docente universitario y pedagogo experto en mapas conceptuales y active recall gamificado. Genera diagramas precisos, estimulantes y conceptualmente impecables.",
+        thinkingConfig: { thinkingBudget: 0 },
+        systemInstruction: "Eres un docente universitario experto en mapas conceptuales. Todas las definiciones y preguntas de cada nodo DEBEN evaluar estrictamente el contenido real del texto subido por el alumno, jamás preguntas abstractas o genéricas.",
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -2392,7 +2390,7 @@ ${cleanText.substring(0, 10000)}`,
                     required: ['question', 'options', 'correctIndex']
                   }
                 },
-                required: ['id', 'label', 'shortDesc', 'practicalExplanation', 'emoji']
+                required: ['id', 'label', 'shortDesc', 'practicalExplanation', 'emoji', 'quickQuiz']
               }
             },
             connections: {
@@ -2411,11 +2409,11 @@ ${cleanText.substring(0, 10000)}`,
           required: ['centralTopic', 'nodes', 'connections']
         }
       }
-    }, ['gemini-2.5-flash', 'gemini-flash-latest']);
+    }, ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest']);
 
-    // Timeout de 8.5 segundos para garantizar respuesta rápida y evitar cuelgues
+    // Timeout de 35 segundos para permitir que Gemini estructure todo el mapa y las preguntas reales del texto sin cortarse
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Timeout en IA de diagrama (8.5s)")), 8500)
+      setTimeout(() => reject(new Error("Timeout en IA de diagrama (35s)")), 35000)
     );
 
     const response: any = await Promise.race([diagramGenPromise, timeoutPromise]);
@@ -2482,99 +2480,92 @@ app.post("/api/speak-live", async (req, res) => {
 });
 
 function generateFallbackDiagram(text: string, title?: string, difficulty: string = 'medio') {
-  const words = text.split(/\s+/).filter(w => w.length > 5);
-  const sampleWords = Array.from(new Set(words.map(w => w.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, '')))).slice(0, 15);
-  const mainTitle = title || (sampleWords[0] ? `Estudio de ${sampleWords[0]}` : "Núcleo Temático");
+  const clean = cleanStudyTextForAnalysis(text || '');
+  const topics = generateFallbackTopics(clean);
+  const rawSentences = (clean.match(/[^.!?]+[.!?]+/g) || [])
+    .map(s => s.replace(/\s+/g, ' ').trim())
+    .filter(s => s.length > 35 && s.length < 240);
 
+  const mainTitle = title || topics[0]?.title || "Núcleo Temático del Documento";
   const colors = ['#10b981', '#38bdf8', '#fbbf24', '#a855f7', '#f43f5e', '#f97316'];
   const emojis = ['🧠', '⚡', '🔬', '📊', '🏛️', '💡'];
+  const categories = ['clave', 'proceso', 'teoria', 'aplicacion'];
 
-  const nodes = [
-    {
-      id: "node_1",
-      label: sampleWords[1] ? sampleWords[1].toUpperCase() : "Principio Teórico",
-      category: "clave",
-      shortDesc: "Fundamento conceptual que estructura el marco de análisis.",
-      practicalExplanation: "En la práctica, actúa como la base o cimiento sobre el cual se articulan las demás variables.",
-      funFact: "Los modelos conceptuales sólidos permiten predecir comportamientos sin necesidad de memorización mecánica.",
-      emoji: emojis[0],
-      color: colors[0],
-      parentId: "central",
-      quickQuiz: {
-        question: difficulty === 'dificil' ? "¿Qué implicancia epistemológica tiene este principio en el modelo?" : "¿Cuál es el rol de este principio fundamental?",
-        options: ["Estructurar y dar coherencia al marco de análisis", "Es un elemento accesorio descartable", "Solo aplica a casos aislados"],
-        correctIndex: 0,
-        hint: "Analiza el rol de los cimientos en cualquier estructura conceptual."
-      }
-    },
-    {
-      id: "node_2",
-      label: sampleWords[2] ? sampleWords[2].toUpperCase() : "Dinámica y Proceso",
-      category: "proceso",
-      shortDesc: "Secuencia operativa o mecanismo a través del cual interactúan los factores.",
-      practicalExplanation: "Funciona como un circuito o sistema secuencial donde cada fase depende de la anterior.",
-      funFact: "La mayoría de los sistemas complejos se descomponen en secuencias de entrada, transformación y salida.",
-      emoji: emojis[1],
-      color: colors[1],
-      parentId: "central",
-      quickQuiz: {
-        question: "¿Cómo se describe la interacción de este proceso?",
-        options: ["Secuencia interconectada con relación de dependencia", "Eventos aleatorios sin causalidad", "Un estado estático sin transformaciones"],
-        correctIndex: 0,
-        hint: "Observa la secuencia de causas y consecuencias entre fases."
-      }
-    },
-    {
-      id: "node_3",
-      label: sampleWords[3] ? sampleWords[3].toUpperCase() : "Variables y Causalidad",
-      category: "clave",
-      shortDesc: "Factores determinantes que condicionan el comportamiento del fenómeno.",
-      practicalExplanation: "Similar a una reacción en cadena donde modificar un parámetro altera el equilibrio general.",
-      funFact: "El análisis multifactorial es la competencia clave en el pensamiento universitario avanzado.",
-      emoji: emojis[2],
-      color: colors[2],
-      parentId: "node_2",
-      quickQuiz: {
-        question: "¿Qué ocurre al variar uno de los parámetros determinantes?",
-        options: ["Impacta y altera el comportamiento del sistema", "El sistema permanece inerte e invariable", "Se neutralizan todas las variables"],
-        correctIndex: 0,
-        hint: "Considera la noción de causalidad interdependiente."
-      }
-    },
-    {
-      id: "node_4",
-      label: sampleWords[4] ? sampleWords[4].toUpperCase() : "Aplicación en Campo",
-      category: "aplicacion",
-      shortDesc: "Implementación práctica, resolución de problemas y casos reales de estudio.",
-      practicalExplanation: "Permite transferir la teoría abstracta a la resolución de problemas profesionales concretos.",
-      funFact: "El conocimiento abstracto cobra su verdadero valor cuando se traduce en toma de decisiones efectivas.",
-      emoji: emojis[3],
-      color: colors[3],
-      parentId: "node_1",
-      quickQuiz: {
-        question: "¿Cuál es la finalidad última de transferir este concepto a campo?",
-        options: ["Resolver problemáticas concretas y fundamentar decisiones", "Acumular definiciones teóricas aisladas", "Sustituir la evidencia empírica"],
-        correctIndex: 0,
-        hint: "Recuerda que el valor del conocimiento radica en su capacidad de resolución."
+  const nodeCount = Math.min(4, Math.max(3, topics.length));
+  const sliceSize = Math.max(2, Math.floor(rawSentences.length / nodeCount));
+
+  const nodes = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const topicObj = topics[i] || { title: `Concepto Clave ${i + 1}`, description: '' };
+    const blockSentences = rawSentences.slice(i * sliceSize, (i + 1) * sliceSize);
+    const sMain = blockSentences[0] || rawSentences[i % (rawSentences.length || 1)] || topicObj.description || `Concepto desarrollado en ${mainTitle}.`;
+    const sSecond = blockSentences[1] || rawSentences[(i + 1) % (rawSentences.length || 1)] || sMain;
+
+    // Extraer palabra clave real de la oración principal para armar una pregunta 100% anclada al texto
+    const words = sMain.split(' ');
+    let kwIdx = Math.floor(words.length / 2);
+    for (let w = 0; w < words.length; w++) {
+      const cleanW = words[w].replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, '');
+      if (cleanW.length >= 6) {
+        kwIdx = w;
+        break;
       }
     }
-  ];
+    const rawKw = (words[kwIdx] || topicObj.title).replace(/[.,/#!$%^&*;:{}=\-_`~()?"']/g, '');
+    const correctKw = rawKw.charAt(0).toUpperCase() + rawKw.slice(1);
+    const maskedSentence = words.map((w, idx) => idx === kwIdx ? '________' : w).join(' ');
+
+    // Buscar distractores que sean otras palabras reales del documento pero de otros bloques
+    const otherWords = rawSentences
+      .join(' ')
+      .split(/\s+/)
+      .map(w => w.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ]/g, ''))
+      .filter(w => w.length >= 6 && w.toLowerCase() !== rawKw.toLowerCase());
+    const uniqueOther = Array.from(new Set(otherWords));
+    const d1 = uniqueOther[(i * 3) % (uniqueOther.length || 1)] || 'Concepto secundario';
+    const d2 = uniqueOther[(i * 3 + 1) % (uniqueOther.length || 1)] || 'Variable externa';
+    const dist1 = d1.charAt(0).toUpperCase() + d1.slice(1);
+    const dist2 = d2.charAt(0).toUpperCase() + d2.slice(1);
+
+    const opts = [correctKw, dist1, dist2];
+    const correctIndex = i % 3;
+    const temp = opts[0];
+    opts[0] = opts[correctIndex];
+    opts[correctIndex] = temp;
+
+    nodes.push({
+      id: `node_${i + 1}`,
+      label: topicObj.title.substring(0, 38),
+      category: categories[i % categories.length],
+      shortDesc: sMain,
+      practicalExplanation: `En el desarrollo del texto: "${sSecond}"`,
+      funFact: `Idea clave vinculada a "${topicObj.title}" dentro de ${mainTitle}.`,
+      emoji: emojis[i % emojis.length],
+      color: colors[i % colors.length],
+      parentId: i < 2 ? "central" : `node_${i - 1}`,
+      quickQuiz: {
+        question: `Según el documento sobre "${topicObj.title}", completa el enunciado: "${maskedSentence}"`,
+        options: opts,
+        correctIndex,
+        hint: `Revisa la oración del texto: "${sMain.substring(0, 65)}..."`
+      }
+    });
+  }
 
   return {
     centralTopic: {
       id: "central",
       label: mainTitle,
       emoji: "🦉",
-      summary: "Estructura conceptual y relaciones analíticas del tema.",
-      practicalExample: "Visión panorámica que conecta fundamentos teóricos con aplicaciones operativas de campo."
+      summary: rawSentences[0] || `Síntesis conceptual de ${mainTitle}.`,
+      practicalExample: rawSentences[1] || "Análisis directo de las ideas principales expuestas en el documento."
     },
     nodes,
-    connections: [
-      { from: "central", to: "node_1", label: "se fundamenta en" },
-      { from: "central", to: "node_2", label: "se procesa mediante" },
-      { from: "node_2", to: "node_3", label: "determina" },
-      { from: "node_1", to: "node_4", label: "se traduce en" }
-    ]
+    connections: nodes.map((n, idx) => ({
+      from: idx < 2 ? "central" : `node_${idx - 1}`,
+      to: n.id,
+      label: idx === 0 ? "fundamenta" : idx === 1 ? "desarrolla" : "se vincula con"
+    }))
   };
 }
 
@@ -2838,13 +2829,16 @@ Hazle una pregunta sobre el primer tema. Si responde incorrectamente, dale pista
 Cuando el usuario responda correctamente a una pregunta sobre un tema, DEBES llamar a la función 'unlockTopic' con el ID de ese tema para desbloquear su imagen en la pantalla. Luego, felicítalo y pasa a hacerle una pregunta sobre el siguiente tema.
 
 DESPLIEGUE VISUAL DE IDEAS CLAVE Y PALABRAS GUÍA EN PANTALLA:
-Siempre que expliques un concepto, des una pista o le formules una pregunta al usuario, DEBES llamar a la función 'displayKeyConcept':
+Cuando expliques un concepto o formules una pregunta al usuario, llama a la función 'displayKeyConcept':
 1. En 'keyConcept', coloca la palabra clave o la pregunta resumida en una frase muy corta (máximo 5-7 palabras).
-2. CADA VEZ QUE LE FORMULES UNA PREGUNTA, DEBES incluir obligatoriamente el parámetro 'suggestedKeywords' con 2 a 5 palabras o términos clave indispensables que el estudiante debería mencionar o responder oralmente. Esto le servirá como una guía visual en pantalla para su respuesta.
+2. En 'suggestedKeywords', incluye de 2 a 5 palabras clave que el estudiante debería mencionar.
+3. MUY IMPORTANTE: Inmediatamente después de llamar a 'displayKeyConcept' o 'unlockTopic', DEBES HABLAR EN VOZ ALTA al usuario sin quedarte en silencio.
 
-IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni evalúes su respuesta todavía. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
+REGLA DE TOMA DE TURNO ÁGIL Y FLUIDA:
+1. Al iniciar la sesión, saluda brevemente con entusiasmo y haz de inmediato la primera pregunta sobre el primer tema.
+2. En cuanto el estudiante responda o haga una pausa de silencio de 1 a 2 segundos tras hablar, TOMA EL TURNO Y RESPONDE DE INMEDIATO en voz alta. NUNCA te quedes callado esperando más tiempo. Si la respuesta del usuario fue muy breve o incompleta, evalúala amablemente o dale una pista directa en voz alta para que continúe.
 
-Mantén tus respuestas concisas y adecuadas para una conversación hablada en español. Sé proactivo haciendo preguntas si el usuario se queda callado por mucho tiempo sin haber empezado a hablar.
+Mantén tus respuestas concisas (2 a 4 oraciones) y dinámicas en español.
 
 REGLA DE METADATOS:
 Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de portada. Concéntrate exclusivamente en el contenido temático sustantivo.
@@ -2902,7 +2896,7 @@ Las 5 preguntas son:
 ${questions ? questions.map((q: string, i: number) => `Pregunta ${i + 1}: ${q}`).join('\n') : ''}
 
 REGLAS DE EVALUACIÓN Y TOMA DE TURNO:
-1. Al iniciar, saluda al estudiante brevemente y formula con claridad la PREGUNTA 1.
+1. Al iniciar, saluda al estudiante brevemente y formula con claridad la PREGUNTA 1 en voz alta.
 2. Cuando el estudiante hable ante el micrófono respondiendo a la pregunta:
    - En cuanto el estudiante termine de hablar o haga una breve pausa de 1 a 2 segundos (o si indica que terminó), TOMA EL TURNO DE INMEDIATO. NO TE QUEDES EN SILENCIO NI ESPERES MÁS TIEMPO.
    - DEBES llamar obligatoriamente a la función 'submitOralAnswer' con los datos de evaluación:
@@ -2912,12 +2906,12 @@ REGLAS DE EVALUACIÓN Y TOMA DE TURNO:
      * 'userAnswerTranscript': resumen breve de lo que dijo el estudiante.
      * 'strengths': aciertos principales.
      * 'toImprove': detalles que faltaron.
-   - Tras ejecutar 'submitOralAnswer', dile brevemente tu evaluación y formula inmediatamente la SIGUIENTE PREGUNTA.
+   - Inmediatamente tras ejecutar 'submitOralAnswer', HABLA EN VOZ ALTA dándole tu devolución y formula la SIGUIENTE PREGUNTA.
 3. Repite este ciclo de manera fluida y dinámica para las 5 preguntas.
 4. Al evaluar la pregunta 5 (índice 4), haz una síntesis de cierre con su nota global y felicítalo.
 
 DESPLIEGUE DE IDEAS CLAVE:
-Al hacer cada pregunta, llama a 'displayKeyConcept' con la idea principal y las palabras guía en 'suggestedKeywords'.
+Al hacer cada pregunta, llama a 'displayKeyConcept' con la idea principal y las palabras guía en 'suggestedKeywords', e inmediatamente habla en voz alta.
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
@@ -2932,15 +2926,17 @@ Mantén tus intervenciones habladas concisas para mantener un diálogo dinámico
             ]
           }];
 
-          systemInstruction = `Eres un tutor de estudio experto y amigable. El usuario ha subido un documento y quiere estudiar dialogando contigo.
-Explícale los conceptos, responde sus dudas y hazle preguntas para comprobar su comprensión si lo ves oportuno.
+          systemInstruction = `Eres un tutor de estudio experto, cálido y dinámico. El usuario ha subido un documento y quiere estudiar dialogando contigo por voz en tiempo real.
+Explícale los conceptos con claridad, responde sus dudas y hazle preguntas breves para comprobar su comprensión.
 
 DESPLIEGUE VISUAL DE IDEAS CLAVE EN PANTALLA:
-Siempre que expliques un concepto, des una respuesta o hagas una observación verbal, DEBES invocar frecuentemente la función 'displayKeyConcept' enviando la palabra clave o la idea principal resumida en una frase muy corta (2 a 6 palabras). Esto es fundamental para que el usuario vea escritas en pantalla las palabras o frases principales en tiempo real mientras te escucha hablar.
+Cuando expliques un concepto o hagas una pregunta importante, llama a la función 'displayKeyConcept' enviando la idea principal resumida en 2 a 6 palabras. MUY IMPORTANTE: Inmediatamente después de llamar a 'displayKeyConcept', DEBES HABLAR EN VOZ ALTA al estudiante sin quedarte en silencio.
 
-IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni asumas que ha terminado. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
+REGLA DE TOMA DE TURNO ÁGIL Y FLUIDA:
+1. Al iniciar la sesión, saluda de inmediato con entusiasmo, menciona de qué trata el documento cargado y pregúntale por qué punto quiere empezar o proponle el primer concepto clave.
+2. En cuanto el usuario termine una frase o haga una pausa de 1 a 2 segundos, RESPONDE DE INMEDIATO en voz alta. NUNCA te quedes en silencio esperando.
 
-Mantén tus respuestas concisas y adecuadas para una conversación hablada en español. Sé proactivo haciendo preguntas si el usuario se queda callado por mucho tiempo sin haber empezado a hablar.
+Mantén tus respuestas habladas concisas (2 a 4 oraciones) y conversacionales en español.
 
 REGLA DE METADATOS:
 Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de portada. Concéntrate exclusivamente en el contenido temático sustantivo de la materia.
@@ -2953,7 +2949,7 @@ ${notesMemoryBlock}
 
         try {
           const ai = getAiClient(customKey);
-          const liveConfig = {
+          const baseLiveConfig = {
             responseModalities: [Modality.AUDIO],
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
@@ -2963,7 +2959,7 @@ ${notesMemoryBlock}
           };
           const liveCallbacks = {
             onopen: () => {
-              safeSend({ type: 'open' });
+              // Handled after session assignment in connectLive
             },
             onmessage: (serverMessage: LiveServerMessage) => {
               safeSend({ type: 'message', data: serverMessage });
@@ -2980,23 +2976,39 @@ ${notesMemoryBlock}
           const liveModels = [
             process.env.GEMINI_LIVE_MODEL,
             "gemini-2.5-flash-native-audio-latest",
-            "gemini-3.1-flash-live-preview",
             "gemini-2.5-flash-native-audio-preview-09-2025",
             "gemini-2.0-flash-live-001",
             "gemini-2.0-flash-exp"
           ].filter(Boolean) as string[];
 
+          const dispatchInputToSession = (session: any, packet: any) => {
+            if (!packet) return;
+            if (packet.text) {
+              session.sendClientContent({
+                turns: [{ role: 'user', parts: [{ text: packet.text }] }],
+                turnComplete: true
+              });
+            } else {
+              session.sendRealtimeInput(packet);
+            }
+          };
+
           const connectLive = async () => {
             let lastLiveErr: any = null;
             for (const modelName of liveModels) {
               try {
+                const modelConfig: any = { ...baseLiveConfig };
+                if (modelName.includes('2.5') || modelName.includes('3.')) {
+                  modelConfig.thinkingConfig = { thinkingBudget: 0 };
+                }
                 const session = await ai.live.connect({
                   model: modelName,
-                  config: liveConfig,
+                  config: modelConfig,
                   callbacks: liveCallbacks
                 });
                 liveSession = session;
                 console.log(`[Gemini Live] Conectado exitosamente con modelo: ${modelName}`);
+                safeSend({ type: 'open' });
                 return session;
               } catch (liveErr: any) {
                 console.warn(`[Gemini Live] Falló conexión con ${modelName}:`, liveErr?.message || liveErr);
@@ -3011,7 +3023,9 @@ ${notesMemoryBlock}
               const buffered = inputBuffer.shift();
               try {
                 if (buffered.type === 'realtimeInput') {
-                  session.sendRealtimeInput(buffered.data);
+                  dispatchInputToSession(session, buffered.data);
+                } else if (buffered.type === 'clientContent') {
+                  session.sendClientContent(buffered.data);
                 } else if (buffered.type === 'toolResponse') {
                   session.sendToolResponse(buffered.data);
                 }
@@ -3032,12 +3046,29 @@ ${notesMemoryBlock}
       } else if (parsed.type === 'realtimeInput') {
         if (liveSession) {
           try {
-            liveSession.sendRealtimeInput(parsed.data);
+            if (parsed.data && parsed.data.text) {
+              liveSession.sendClientContent({
+                turns: [{ role: 'user', parts: [{ text: parsed.data.text }] }],
+                turnComplete: true
+              });
+            } else {
+              liveSession.sendRealtimeInput(parsed.data);
+            }
           } catch (sendErr) {
             console.warn("Error sending realtime input to Gemini Live:", sendErr);
           }
         } else if (liveSessionPromise) {
           inputBuffer.push({ type: 'realtimeInput', data: parsed.data });
+        }
+      } else if (parsed.type === 'clientContent') {
+        if (liveSession) {
+          try {
+            liveSession.sendClientContent(parsed.data);
+          } catch (sendErr) {
+            console.warn("Error sending clientContent to Gemini Live:", sendErr);
+          }
+        } else if (liveSessionPromise) {
+          inputBuffer.push({ type: 'clientContent', data: parsed.data });
         }
       } else if (parsed.type === 'toolResponse') {
         if (liveSession) {

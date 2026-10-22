@@ -784,6 +784,7 @@ export function OralEvaluatorSession({
             recorderRef.current?.stop();
             recorderRef.current = new AudioRecorder(
               (base64) => {
+                if (playerRef.current?.isPlaying()) return;
                 socketPromise.then(s => {
                   s.sendRealtimeInput({
                     audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -800,10 +801,10 @@ export function OralEvaluatorSession({
                       clearTimeout(silenceTimeoutRef.current);
                       silenceTimeoutRef.current = null;
                     }
-                  } else if (vol <= 0.03 && userSpokeRecentlyRef.current && !isSpeaking) {
+                  } else if (vol <= 0.03 && userSpokeRecentlyRef.current && !isSpeaking && !playerRef.current?.isPlaying()) {
                     if (!silenceTimeoutRef.current) {
                       silenceTimeoutRef.current = setTimeout(() => {
-                        if (userSpokeRecentlyRef.current && !isSpeaking && isMounted) {
+                        if (userSpokeRecentlyRef.current && !isSpeaking && !playerRef.current?.isPlaying() && isMounted) {
                           userSpokeRecentlyRef.current = false;
                           socketPromise.then(s => {
                             try {
@@ -813,9 +814,16 @@ export function OralEvaluatorSession({
                             } catch (_) {}
                           });
                         }
-                      }, 2600);
+                      }, 2200);
                     }
                   }
+                }
+              },
+              () => {
+                if (!playerRef.current?.isPlaying()) {
+                  socketPromise.then(s => {
+                    s.sendRealtimeInput({ audioStreamEnd: true });
+                  });
                 }
               }
             );
@@ -929,7 +937,7 @@ export function OralEvaluatorSession({
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Respuesta y calificación registradas exitosamente en la interfaz." }
+                      response: { result: "Respuesta y calificación registradas en la interfaz. Ahora dale tu devolución en voz alta y haz la siguiente pregunta de inmediato." }
                     });
                   } else if (call.name === 'displayKeyConcept') {
                     const args = call.args as any;
@@ -947,7 +955,7 @@ export function OralEvaluatorSession({
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Palabra o idea principal mostrada en pantalla correctamente." }
+                      response: { result: "Idea principal mostrada en pantalla. Continúa hablándole en voz alta al estudiante de inmediato." }
                     });
                   }
                 }
@@ -959,10 +967,13 @@ export function OralEvaluatorSession({
               }
             }
 
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio) {
-              setIsSpeaking(true);
-              playerRef.current?.addPCM16(base64Audio);
+            const parts = message.serverContent?.modelTurn?.parts || [];
+            for (const part of parts) {
+              const base64Audio = part?.inlineData?.data;
+              if (base64Audio) {
+                setIsSpeaking(true);
+                playerRef.current?.addPCM16(base64Audio);
+              }
             }
             
             if (message.serverContent?.interrupted) {
