@@ -2928,7 +2928,7 @@ Mantén tus intervenciones habladas concisas para mantener un diálogo dinámico
 Explícale los conceptos, responde sus dudas y hazle preguntas para comprobar su comprensión si lo ves oportuno.
 
 DESPLIEGUE VISUAL DE IDEAS CLAVE EN PANTALLA:
-Siempre que expliques un concepto, des una respuesta o hagas una observación verbal, DEBES invocar frecuentemente la función 'displayKeyConcept' enviando la palabra clave o la idea principal resumida en una frase muy corta (2 a 6 palabras). Esto es fundamental para que el usuario vea escritas en pantalla las palabras o frases principales en tiempo real mientras te escucha hablar. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
+Siempre que expliques un concepto, des una respuesta o hagas una observación verbal, DEBES invocar la función 'displayKeyConcept' enviando la idea central resumida en una frase corta (3 a 8 palabras), su categoría ('Idea Central', 'Concepto Clave' o 'Pregunta Guía') y 2 a 4 palabras clave en 'suggestedKeywords'. Esto es fundamental para que el usuario vea escritas en pantalla las pequeñas ideas centrales de cada cosa que se habla en tiempo real mientras te escucha. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
 
 IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni asumas que ha terminado. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
 
@@ -2947,6 +2947,7 @@ ${notesMemoryBlock}
           const ai = getAiClient(customKey);
           const liveConfig = {
             responseModalities: [Modality.AUDIO],
+            outputAudioTranscription: {},
             speechConfig: {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
             },

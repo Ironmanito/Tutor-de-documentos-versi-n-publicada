@@ -5605,6 +5605,75 @@ export function MicErrorGuide({ onRetry }: { onRetry?: () => void }) {
   );
 }
 
+const LIVE_SPEECH_STOPWORDS = new Set([
+  "como", "para", "este", "esta", "estos", "estas", "todo", "toda", "todos", "todas",
+  "pero", "más", "mas", "sino", "porque", "cuando", "donde", "quien", "cual", "cuales",
+  "sobre", "entre", "hacia", "hasta", "desde", "según", "segun", "durante", "mediante",
+  "tiene", "tienen", "hacer", "hace", "hacen", "puede", "pueden", "debe", "deben",
+  "vamos", "hablar", "explicar", "decir", "pregunta", "respuesta", "texto", "documento",
+  "cuaderno", "importante", "fundamental", "principal", "entonces", "además", "ademas",
+  "también", "tambien", "mismo", "misma", "otros", "otras", "algún", "algun", "alguna",
+  "cambio", "definir", "define", "definió", "manera", "forma", "formas", "parte", "partes"
+]);
+
+function extractCentralIdeaFromSpeech(rawSentence: string): { text: string; category: string; suggestedKeywords: string[] } | null {
+  if (!rawSentence) return null;
+  const s = rawSentence.replace(/^text/i, "").replace(/\s+/g, " ").trim();
+  if (s.length < 18) return null;
+
+  if (/^(hola|buenos días|buenas tardes|cómo estás|como estas|tómate tu tiempo|tomate tu tiempo|quieres añadir algo|me escuchas|estoy listo|adelante|perfecto|muy bien\.?$)/i.test(s) && s.length < 48) {
+    return null;
+  }
+
+  const isQuestion = s.includes("?");
+  let cleaned = s.replace(/^[¡!¿?\s.,;:-]+/, "");
+  const fillerRegex = /^(hola[!.,\s]*|claro( que sí)?[!.,\s]*|por supuesto[!.,\s]*|exacto[!.,\s]*|exactamente[!.,\s]*|muy bien[!.,\s]*|excelente( punto| respuesta| pregunta)?[!.,\s]*|mira[,:\s]*|fíjate que[,:\s]*|veamos[,:\s]*|bueno[,:\s]*|bien[,:\s]*|te explico[,:\s]*|como vimos[,:\s]*|recuerda que[,:\s]*|en primer lugar[,:\s]*|en segundo lugar[,:\s]*|por otro lado[,:\s]*|además[,:\s]*|entonces[,:\s]*|así que[,:\s]*|es decir[,:\s]*|básicamente[,:\s]*|en resumen[,:\s]*|en cambio[,:\s]*)/i;
+  for (let i = 0; i < 4; i++) {
+    cleaned = cleaned.replace(fillerRegex, "").replace(/^[¡!¿?\s.,;:-]+/, "").trim();
+  }
+
+  if (cleaned.length < 16) return null;
+  if (/^(qué te parece|quieres que|alguna duda|tienes alguna pregunta|me sigues hasta aquí|de qué tema quieres)/i.test(cleaned)) {
+    return null;
+  }
+
+  let idea = cleaned.replace(/[.!?;]+$/, "").trim();
+  idea = idea.replace(/,\s*(en cambio|por ejemplo|es decir|sin embargo|por tanto|por lo tanto)\s*,/gi, " ").replace(/\s+/g, " ").trim();
+  const subSplit = idea.split(/\b(?:por el cual|por la cual|por lo cual|lo cual|mientras que|sin embargo|de modo que|porque|ya que|puesto que)\b/i);
+  if (subSplit[0] && subSplit[0].trim().split(/\s+/).length >= 4) {
+    idea = subSplit[0].replace(/[,;:\s]+$/, "").trim();
+  }
+
+  const words = idea.split(/\s+/);
+  if (words.length > 15) {
+    let sliced = words.slice(0, 14).join(" ");
+    sliced = sliced.replace(/\b(de|del|la|el|los|las|un|una|unos|unas|con|por|para|en|a|al|y|o|que|cual|como|desde|hacia|sobre)\s*$/i, "").trim();
+    idea = sliced + "...";
+  }
+
+  idea = idea.charAt(0).toUpperCase() + idea.slice(1);
+  if (isQuestion && !idea.endsWith("?")) idea += "?";
+
+  const kwCandidates = cleaned
+    .replace(/[.,;!?()"«»""]/g, " ")
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length >= 5 && !LIVE_SPEECH_STOPWORDS.has(w.toLowerCase()));
+  const uniqueKws: string[] = [];
+  for (const w of kwCandidates) {
+    if (!uniqueKws.some(u => u.toLowerCase() === w.toLowerCase())) {
+      uniqueKws.push(w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    }
+    if (uniqueKws.length >= 4) break;
+  }
+
+  return {
+    text: idea,
+    category: isQuestion ? "Pregunta Guía" : "Idea Central",
+    suggestedKeywords: uniqueKws
+  };
+}
+
 function StudySession({ 
   text, 
   topics,
@@ -5696,6 +5765,24 @@ function StudySession({
         });
         
         const sessionPromise = Promise.resolve(session);
+        let speechTranscriptBuffer = "";
+
+        const flushSpeechIdeas = (forceAll = false) => {
+          if (!speechTranscriptBuffer.trim()) return;
+          const endsWithPunct = /[.!?]\s*$/.test(speechTranscriptBuffer);
+          const sentences = speechTranscriptBuffer.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
+          const processAll = forceAll || endsWithPunct;
+          const toProcess = processAll ? sentences : sentences.slice(0, -1);
+          speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
+
+          for (const rawSent of toProcess) {
+            const idea = extractCentralIdeaFromSpeech(rawSent);
+            if (idea) {
+              setCurrentKeyConcept(idea);
+              setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
+            }
+          }
+        };
 
         session.setCallbacks({
           onopen: () => {
@@ -5774,6 +5861,14 @@ function StudySession({
               }
             }
 
+            const transcriptChunk = message.serverContent?.outputTranscription?.text;
+            if (transcriptChunk) {
+              speechTranscriptBuffer += transcriptChunk;
+              if (/[.!?]\s*$/.test(speechTranscriptBuffer) || speechTranscriptBuffer.length > 110) {
+                flushSpeechIdeas(false);
+              }
+            }
+
             const parts = message.serverContent?.modelTurn?.parts || [];
             for (const part of parts) {
               const base64Audio = part?.inlineData?.data;
@@ -5784,11 +5879,13 @@ function StudySession({
             }
             
             if (message.serverContent?.interrupted) {
+              speechTranscriptBuffer = "";
               playerRef.current?.interrupt();
               setIsSpeaking(false);
             }
             
             if (message.serverContent?.turnComplete) {
+              flushSpeechIdeas(true);
               setIsSpeaking(false);
             }
           },
@@ -6272,6 +6369,24 @@ function FreeStudySession({
         });
 
         const sessionPromise = Promise.resolve(session);
+        let speechTranscriptBuffer = "";
+
+        const flushSpeechIdeas = (forceAll = false) => {
+          if (!speechTranscriptBuffer.trim()) return;
+          const endsWithPunct = /[.!?]\s*$/.test(speechTranscriptBuffer);
+          const sentences = speechTranscriptBuffer.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
+          const processAll = forceAll || endsWithPunct;
+          const toProcess = processAll ? sentences : sentences.slice(0, -1);
+          speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
+
+          for (const rawSent of toProcess) {
+            const idea = extractCentralIdeaFromSpeech(rawSent);
+            if (idea) {
+              setCurrentKeyConcept(idea);
+              setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
+            }
+          }
+        };
 
         session.setCallbacks({
           onopen: () => {
@@ -6340,6 +6455,14 @@ function FreeStudySession({
               }
             }
 
+            const transcriptChunk = message.serverContent?.outputTranscription?.text;
+            if (transcriptChunk) {
+              speechTranscriptBuffer += transcriptChunk;
+              if (/[.!?]\s*$/.test(speechTranscriptBuffer) || speechTranscriptBuffer.length > 110) {
+                flushSpeechIdeas(false);
+              }
+            }
+
             const parts = message.serverContent?.modelTurn?.parts || [];
             for (const part of parts) {
               const base64Audio = part?.inlineData?.data;
@@ -6350,11 +6473,13 @@ function FreeStudySession({
             }
             
             if (message.serverContent?.interrupted) {
+              speechTranscriptBuffer = "";
               playerRef.current?.interrupt();
               setIsSpeaking(false);
             }
             
             if (message.serverContent?.turnComplete) {
+              flushSpeechIdeas(true);
               setIsSpeaking(false);
             }
           },
