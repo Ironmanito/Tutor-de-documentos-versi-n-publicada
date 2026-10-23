@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { UploadCloud, Cloud, FileText, Mic, Square, Loader2, BookOpen, Volume2, Plus, Trash2, Lock, Unlock, Image as ImageIcon, Sparkles, ListChecks, CheckCircle2, XCircle, ArrowRight, AlertTriangle, Key, Check, ExternalLink, HelpCircle, CreditCard, Coins, DollarSign, Search, Folder, RefreshCw, LogOut, MessageSquareHeart, Users, AlertCircle, Info, X, ShieldCheck, Shield, Mail, KeyRound, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { extractTextFromFile, importGoogleDocFromUrl } from './lib/pdf';
 import { AudioStreamPlayer, AudioRecorder } from './lib/audio';
@@ -5661,7 +5661,7 @@ const LIVE_SPEECH_STOPWORDS = new Set([
   "pero", "más", "mas", "sino", "porque", "cuando", "donde", "quien", "cual", "cuales",
   "sobre", "entre", "hacia", "hasta", "desde", "según", "segun", "durante", "mediante",
   "tiene", "tienen", "hacer", "hace", "hacen", "puede", "pueden", "debe", "deben",
-  "vamos", "hablar", "explicar", "decir", "pregunta", "preguntas", "respuesta", "texto", "documento",
+  "vamos", "hablar", "explicar", "decir", "pregunta", "preguntas", "respuesta", "respuestas", "texto", "documento",
   "cuaderno", "importante", "fundamental", "principal", "entonces", "además", "ademas",
   "también", "tambien", "mismo", "misma", "otros", "otras", "algún", "algun", "alguna",
   "cambio", "definir", "define", "definió", "manera", "forma", "formas", "parte", "partes",
@@ -5670,18 +5670,74 @@ const LIVE_SPEECH_STOPWORDS = new Set([
   "duda", "dudas", "aclarar", "aclaración", "comentar", "ejemplo", "punto", "tema", "temas",
   "sección", "seccion", "ahora", "después", "despues", "adelante", "claro", "exacto", "bien",
   "entendido", "entiendes", "recuerda", "fíjate", "fijate", "mira", "escucha", "hola",
-  "tutor", "estudiante", "apunte", "puedes", "podemos", "dime", "cuéntame", "cuentame", "bueno"
+  "tutor", "estudiante", "apunte", "puedes", "podemos", "dime", "cuéntame", "cuentame", "bueno",
+  "etapa", "etapas", "evento", "eventos", "prefieres", "prefiere", "comencemos", "empecemos",
+  "charla", "conversación", "conversacion", "diálogo", "dialogo", "paso", "pasos", "acuerdo",
+  "parecer", "subido", "subiste", "cargaste", "construye", "partir"
 ]);
 
-function extractCentralIdeaFromSpeech(rawSentence: string, documentText?: string): { text: string; category: string; suggestedKeywords: string[] } | null {
+function isMetaConversational(str: string): boolean {
+  if (!str) return true;
+  const s = str.trim().toLowerCase();
+  
+  // 1. Signos explícitos de interrogación
+  if (s.includes('?') || s.includes('¿')) return true;
+
+  // 2. Pronombres y partículas interrogativas al inicio
+  if (/^(qué|que|cuál|cual|cuáles|cuales|cómo|como|cuándo|cuando|dónde|donde|por qué|porque|quién|quien|acaso)\b/i.test(s)) return true;
+
+  // 3. Verbos de diálogo o preguntas dirigidas al estudiante
+  if (/^(te gustaría|te gustaria|quieres|deseas|prefieres|qué opinas|que opinas|qué piensas|que piensas|te parece|te da la impresión|te animas|quisieras|tienes alguna|alguna duda|me sigues|te queda claro|estás de acuerdo|estas de acuerdo|podrías decirme|podrias decirme|dime si|cuéntame|cuentame|hablemos de|vamos a ver)/i.test(s)) return true;
+
+  // 4. Frases de continuación o gestión de turnos
+  if (/(pasamos a|continuamos con|sigamos con|avancemos con|profundicemos|vamos a profundizar|quieres profundizar|te gustaría profundizar|prefieres pasar|o prefieres|quieres que sigamos|quieres que continuemos)/i.test(s)) return true;
+
+  // 5. Meta-referencias al archivo subido, a la app o a la conversación
+  if (/(el documento que has subido|el texto que subiste|el archivo que cargaste|en el apunte que subiste|el apunte que subiste|en tu documento|en el documento que|según el documento que subiste|en el texto que subiste)/i.test(s)) return true;
+  if (/(como tutor|en esta sesión|en esta tutoria|en nuestra charla|en este diálogo|en esta conversación)/i.test(s)) return true;
+  if (/(esta idea se construye a partir de|a partir de lo que comentas|según lo que me dices|como acabas de mencionar|como decías recién|como me dijiste)/i.test(s)) return true;
+
+  return false;
+}
+
+function extractDocumentKeyTerms(documentText: string, count = 12): string[] {
+  if (!documentText) return [];
+  const words = documentText
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[«»""''()[\]{}.,;:!?/\\#~=_\-+*&^%$@0-9]/g, " ")
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length >= 4);
+
+  const freq = new Map<string, { term: string; count: number }>();
+  for (const w of words) {
+    const lower = w.toLowerCase();
+    if (LIVE_SPEECH_STOPWORDS.has(lower)) continue;
+    if (isMetaConversational(lower)) continue;
+    if (/^(para|como|este|esta|estos|estas|desde|hacia|hasta|entre|sobre|segun|durante|cuando|donde|quien|cual|cuales|porque|puesto|siendo|haber|habiendo|teniendo|haciendo|cada|otra|otro|otras|otros|aquel|aquella|aquellos|aquellas|alguno|alguna|algunos|algunas)$/i.test(lower)) continue;
+    
+    const cap = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    const cur = freq.get(lower);
+    if (cur) {
+      cur.count++;
+    } else {
+      freq.set(lower, { term: cap, count: 1 });
+    }
+  }
+
+  return Array.from(freq.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, count)
+    .map(i => i.term);
+}
+
+function extractCentralIdeaFromSpeech(rawSentence: string, documentText?: string, docKeywords: string[] = []): { text: string; category: string; suggestedKeywords: string[] } | null {
   if (!rawSentence) return null;
   const s = rawSentence.replace(/^text/i, "").replace(/\s+/g, " ").trim();
   if (s.length < 18) return null;
 
-  // 1. REGLA ESTRICTA: Descartar tajantemente cualquier pregunta
-  // Las preguntas son fórmulas conversacionales o pedagógicas del tutor para continuar el diálogo,
-  // NO son las notas sustantivas ni el contenido académico del documento.
-  if (s.includes("?") || s.includes("¿")) {
+  // 1. REGLA ESTRICTA: Descartar tajantemente cualquier pregunta o frase meta-conversacional
+  if (isMetaConversational(s)) {
     return null;
   }
 
@@ -5697,12 +5753,7 @@ function extractCentralIdeaFromSpeech(rawSentence: string, documentText?: string
   }
 
   if (cleaned.length < 16) return null;
-
-  // 2. Descartar fórmulas conversacionales de turno, continuación o cierre de pregunta
-  const conversationalContinuations = /^(qué te parece|que te parece|quieres que|te gustaría|te gustaria|alguna duda|tienes alguna|me sigues|te queda claro|de qué tema|sobre qué|pasamos a|continuamos|sigamos|avancemos|podemos ver|veamos si|cómo ves|como ves|cuéntame|dime si|estás de acuerdo|estas de acuerdo|quieres añadir|quieres comentar|te parece bien|podrías decirme|podrias decirme|qué opinas|que opinas|qué piensas|que piensas|cuál es tu opinión|dime qué opinas)/i;
-  if (conversationalContinuations.test(cleaned)) {
-    return null;
-  }
+  if (isMetaConversational(cleaned)) return null;
 
   let idea = cleaned.replace(/[.!?;]+$/, "").trim();
   idea = idea.replace(/,\s*(en cambio|por ejemplo|es decir|sin embargo|por tanto|por lo tanto)\s*,/gi, " ").replace(/\s+/g, " ").trim();
@@ -5724,28 +5775,36 @@ function extractCentralIdeaFromSpeech(rawSentence: string, documentText?: string
     .replace(/[.,;!?()"«»""]/g, " ")
     .split(/\s+/)
     .map(w => w.trim())
-    .filter(w => w.length >= 5 && !LIVE_SPEECH_STOPWORDS.has(w.toLowerCase()));
+    .filter(w => w.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(w.toLowerCase()) && !isMetaConversational(w));
 
-  // 3. Validación y anclaje contra el documento académico del usuario:
-  // Si tenemos el texto del documento cargado, verificamos que las palabras clave existan en el texto del apunte
-  let filteredKws = kwCandidates;
+  // Validación y anclaje contra el documento académico del usuario
+  let matchedKws: string[] = [];
   if (documentText && documentText.length > 50) {
     const docLower = documentText.toLowerCase();
-    const inDocKws = kwCandidates.filter(w => docLower.includes(w.toLowerCase()));
-    if (inDocKws.length > 0) {
-      filteredKws = inDocKws;
-    } else {
+    matchedKws = kwCandidates.filter(w => docLower.includes(w.toLowerCase()));
+    if (matchedKws.length === 0) {
       // Si la frase expresada no contiene términos sustantivos del documento, se descarta para no ensuciar las notas
       return null;
     }
+  } else {
+    matchedKws = kwCandidates;
   }
 
   const uniqueKws: string[] = [];
-  for (const w of filteredKws) {
-    if (!uniqueKws.some(u => u.toLowerCase() === w.toLowerCase())) {
-      uniqueKws.push(w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  for (const w of matchedKws) {
+    const cap = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    if (!uniqueKws.some(u => u.toLowerCase() === cap.toLowerCase())) {
+      uniqueKws.push(cap);
     }
     if (uniqueKws.length >= 4) break;
+  }
+
+  // Complementar con palabras clave del documento si faltan para que el estudiante siempre tenga guía visual
+  for (const fallbackKw of docKeywords) {
+    if (uniqueKws.length >= 4) break;
+    if (!uniqueKws.some(u => u.toLowerCase() === fallbackKw.toLowerCase())) {
+      uniqueKws.push(fallbackKw);
+    }
   }
 
   if (uniqueKws.length === 0) return null;
@@ -5776,7 +5835,17 @@ function StudySession({
   const [userVolume, setUserVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
+  const documentKeyTerms = useMemo(() => extractDocumentKeyTerms(text, 12), [text]);
+  const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(() => {
+    if (documentKeyTerms.length > 0) {
+      return {
+        text: "Tutoría de Estudio del Cuaderno",
+        category: "Conceptos Clave",
+        suggestedKeywords: documentKeyTerms.slice(0, 4)
+      };
+    }
+    return null;
+  });
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
   const [userCustomNote, setUserCustomNote] = useState("");
   
@@ -5787,6 +5856,7 @@ function StudySession({
   const keyConceptsHistoryRef = useRef<string[]>([]);
   const reconnectTimeoutRef = useRef<any>(null);
   const voiceStartTimeRef = useRef<number>(Date.now());
+  const hasToolConceptInCurrentTurnRef = useRef(false);
 
   useEffect(() => {
     keyConceptsHistoryRef.current = keyConceptsHistory;
@@ -5852,6 +5922,11 @@ function StudySession({
 
         const flushSpeechIdeas = (forceAll = false) => {
           if (!speechTranscriptBuffer.trim()) return;
+          // Si el tutor ya emitió un concepto formal por displayKeyConcept en este turno, no lo sobreescribimos
+          if (hasToolConceptInCurrentTurnRef.current) {
+            speechTranscriptBuffer = "";
+            return;
+          }
           const endsWithPunct = /[.!?]\s*$/.test(speechTranscriptBuffer);
           const sentences = speechTranscriptBuffer.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
           const processAll = forceAll || endsWithPunct;
@@ -5859,7 +5934,7 @@ function StudySession({
           speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
 
           for (const rawSent of toProcess) {
-            const idea = extractCentralIdeaFromSpeech(rawSent, text);
+            const idea = extractCentralIdeaFromSpeech(rawSent, text, documentKeyTerms);
             if (idea) {
               setCurrentKeyConcept(idea);
               setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
@@ -5876,6 +5951,7 @@ function StudySession({
             recorderRef.current?.stop();
             recorderRef.current = new AudioRecorder(
               (base64) => {
+                hasToolConceptInCurrentTurnRef.current = false;
                 sessionPromise.then(s => {
                   s.sendRealtimeInput({
                     audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -5885,6 +5961,9 @@ function StudySession({
               (vol) => {
                 if (isMounted) {
                   setUserVolume(vol);
+                  if (vol > 0.08) {
+                    hasToolConceptInCurrentTurnRef.current = false;
+                  }
                 }
               }
             );
@@ -5920,23 +5999,32 @@ function StudySession({
                     const args = call.args as any;
                     if (args && args.keyConcept) {
                       const rawConcept = String(args.keyConcept).trim();
-                      const isQuestionOrPrompt = rawConcept.includes('?') || 
-                        rawConcept.includes('¿') ||
-                        /^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|te parece|pasamos|continuamos|sigamos|avancemos|tienes alguna|alguna duda)/i.test(rawConcept);
 
-                      if (!isQuestionOrPrompt && rawConcept.length >= 8) {
+                      if (!isMetaConversational(rawConcept) && rawConcept.length >= 8) {
                         const conceptText = rawConcept.charAt(0).toUpperCase() + rawConcept.slice(1);
                         const cat = (args.category && args.category !== 'Pregunta Guía') ? args.category : 'Concepto Clave';
                         const rawKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
-                        const filteredKws = rawKws.filter((kw: any) => {
-                          const k = String(kw || '').trim().toLowerCase();
-                          return k.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(k);
-                        });
+                        const filteredKws = rawKws
+                          .map((kw: any) => String(kw || '').trim())
+                          .filter((kw: string) => {
+                            const k = kw.toLowerCase();
+                            return k.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(k) && !isMetaConversational(k);
+                          })
+                          .map((kw: string) => kw.charAt(0).toUpperCase() + kw.slice(1).toLowerCase());
 
+                        const combinedKeywords = [...filteredKws];
+                        for (const docKw of documentKeyTerms) {
+                          if (combinedKeywords.length >= 4) break;
+                          if (!combinedKeywords.some(k => k.toLowerCase() === docKw.toLowerCase())) {
+                            combinedKeywords.push(docKw);
+                          }
+                        }
+
+                        hasToolConceptInCurrentTurnRef.current = true;
                         setCurrentKeyConcept({ 
                           text: conceptText, 
                           category: cat,
-                          suggestedKeywords: filteredKws
+                          suggestedKeywords: combinedKeywords
                         });
                         setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c.toLowerCase() !== conceptText.toLowerCase())].slice(0, 15));
                       }
@@ -6393,7 +6481,17 @@ function FreeStudySession({
   const [userVolume, setUserVolume] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(null);
+  const documentKeyTerms = useMemo(() => extractDocumentKeyTerms(text, 12), [text]);
+  const [currentKeyConcept, setCurrentKeyConcept] = useState<{ text: string; category?: string; suggestedKeywords?: string[] } | null>(() => {
+    if (documentKeyTerms.length > 0) {
+      return {
+        text: "Tutoría Libre sobre el Documento",
+        category: "Conceptos Clave",
+        suggestedKeywords: documentKeyTerms.slice(0, 4)
+      };
+    }
+    return null;
+  });
   const [keyConceptsHistory, setKeyConceptsHistory] = useState<string[]>([]);
   const [userCustomNote, setUserCustomNote] = useState("");
   
@@ -6404,6 +6502,7 @@ function FreeStudySession({
   const keyConceptsHistoryRef = useRef<string[]>([]);
   const reconnectTimeoutRef = useRef<any>(null);
   const voiceStartTimeRef = useRef<number>(Date.now());
+  const hasToolConceptInCurrentTurnRef = useRef(false);
 
   useEffect(() => {
     keyConceptsHistoryRef.current = keyConceptsHistory;
@@ -6468,6 +6567,11 @@ function FreeStudySession({
 
         const flushSpeechIdeas = (forceAll = false) => {
           if (!speechTranscriptBuffer.trim()) return;
+          // Si el tutor ya emitió un concepto formal por displayKeyConcept en este turno, no lo sobreescribimos
+          if (hasToolConceptInCurrentTurnRef.current) {
+            speechTranscriptBuffer = "";
+            return;
+          }
           const endsWithPunct = /[.!?]\s*$/.test(speechTranscriptBuffer);
           const sentences = speechTranscriptBuffer.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
           const processAll = forceAll || endsWithPunct;
@@ -6475,7 +6579,7 @@ function FreeStudySession({
           speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
 
           for (const rawSent of toProcess) {
-            const idea = extractCentralIdeaFromSpeech(rawSent, text);
+            const idea = extractCentralIdeaFromSpeech(rawSent, text, documentKeyTerms);
             if (idea) {
               setCurrentKeyConcept(idea);
               setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
@@ -6492,6 +6596,7 @@ function FreeStudySession({
             recorderRef.current?.stop();
             recorderRef.current = new AudioRecorder(
               (base64) => {
+                hasToolConceptInCurrentTurnRef.current = false;
                 sessionPromise.then(s => {
                   s.sendRealtimeInput({
                     audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
@@ -6501,6 +6606,9 @@ function FreeStudySession({
               (vol) => {
                 if (isMounted) {
                   setUserVolume(vol);
+                  if (vol > 0.08) {
+                    hasToolConceptInCurrentTurnRef.current = false;
+                  }
                 }
               }
             );
@@ -6526,23 +6634,32 @@ function FreeStudySession({
                     const args = call.args as any;
                     if (args && args.keyConcept) {
                       const rawConcept = String(args.keyConcept).trim();
-                      const isQuestionOrPrompt = rawConcept.includes('?') || 
-                        rawConcept.includes('¿') ||
-                        /^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|te parece|pasamos|continuamos|sigamos|avancemos|tienes alguna|alguna duda)/i.test(rawConcept);
 
-                      if (!isQuestionOrPrompt && rawConcept.length >= 8) {
+                      if (!isMetaConversational(rawConcept) && rawConcept.length >= 8) {
                         const conceptText = rawConcept.charAt(0).toUpperCase() + rawConcept.slice(1);
                         const cat = (args.category && args.category !== 'Pregunta Guía') ? args.category : 'Concepto Clave';
                         const rawKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
-                        const filteredKws = rawKws.filter((kw: any) => {
-                          const k = String(kw || '').trim().toLowerCase();
-                          return k.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(k);
-                        });
+                        const filteredKws = rawKws
+                          .map((kw: any) => String(kw || '').trim())
+                          .filter((kw: string) => {
+                            const k = kw.toLowerCase();
+                            return k.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(k) && !isMetaConversational(k);
+                          })
+                          .map((kw: string) => kw.charAt(0).toUpperCase() + kw.slice(1).toLowerCase());
 
+                        const combinedKeywords = [...filteredKws];
+                        for (const docKw of documentKeyTerms) {
+                          if (combinedKeywords.length >= 4) break;
+                          if (!combinedKeywords.some(k => k.toLowerCase() === docKw.toLowerCase())) {
+                            combinedKeywords.push(docKw);
+                          }
+                        }
+
+                        hasToolConceptInCurrentTurnRef.current = true;
                         setCurrentKeyConcept({ 
                           text: conceptText, 
                           category: cat,
-                          suggestedKeywords: filteredKws
+                          suggestedKeywords: combinedKeywords
                         });
                         setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c.toLowerCase() !== conceptText.toLowerCase())].slice(0, 15));
                       }

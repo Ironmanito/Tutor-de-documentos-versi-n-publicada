@@ -2765,8 +2765,15 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
         const { mode, text, topics, previousNotes } = parsed.params;
         const cleanText = cleanStudyTextForAnalysis(text || '');
 
-        const notesMemoryBlock = previousNotes && Array.isArray(previousNotes) && previousNotes.length > 0
-          ? `\nMEMORIA Y NOTAS DE LA CONVERSACIÓN PREVIA EN ESTA SESIÓN (REANUDACIÓN):\nEl usuario y tú ya han estado conversando y han tratado los siguientes conceptos y temas clave:\n${previousNotes.map((n: string) => `• ${n}`).join('\n')}\nIMPORTANTE: Continúa la conversación de manera fluida y natural desde este punto, manteniendo el hilo de lo discutido sin volver a empezar de cero.\n`
+        const cleanPreviousNotes = (previousNotes && Array.isArray(previousNotes))
+          ? previousNotes.filter((n: string) => {
+              const s = String(n || '').trim();
+              return s.length >= 8 && !s.includes('?') && !s.includes('¿') && !/^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|el documento que has subido|esta idea se construye)/i.test(s);
+            })
+          : [];
+
+        const notesMemoryBlock = cleanPreviousNotes.length > 0
+          ? `\nMEMORIA Y NOTAS ACADÉMICAS PREVIAS EN ESTA SESIÓN (REANUDACIÓN):\nEl usuario y tú ya han estado conversando y han tratado los siguientes conceptos y temas clave:\n${cleanPreviousNotes.map((n: string) => `• ${n}`).join('\n')}\nIMPORTANTE: Continúa la conversación de manera fluida y natural desde este punto, manteniendo el hilo de lo discutido sin volver a empezar de cero.\n`
           : '';
         
         // Define live config based on the modes
@@ -2829,10 +2836,11 @@ Hazle una pregunta sobre el primer tema. Si responde incorrectamente, dale pista
 Cuando el usuario responda correctamente a una pregunta sobre un tema, DEBES llamar a la función 'unlockTopic' con el ID de ese tema para desbloquear su imagen en la pantalla. Luego, felicítalo y pasa a hacerle una pregunta sobre el siguiente tema.
 
 DESPLIEGUE VISUAL DE IDEAS CLAVE Y PALABRAS GUÍA EN PANTALLA:
-Siempre que expliques un concepto, des una pista o le formules una pregunta al usuario, DEBES llamar a la función 'displayKeyConcept':
-1. En 'keyConcept', coloca la palabra clave o la pregunta resumida en una frase muy corta (máximo 5-7 palabras).
-2. CADA VEZ QUE LE FORMULES UNA PREGUNTA, DEBES incluir obligatoriamente el parámetro 'suggestedKeywords' con 2 a 5 palabras o términos clave indispensables que el estudiante debería mencionar o responder oralmente. Esto le servirá como una guía visual en pantalla para su respuesta.
-3. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
+Siempre que expliques un concepto, des una pista o analices el contenido del documento, DEBES llamar a la función 'displayKeyConcept':
+1. En 'keyConcept', coloca exclusivamente la TESIS, DEFINICIÓN o CONCEPTO ACADÉMICO sustantivo del documento en una frase afirmativa concisa (máximo 4 a 8 palabras).
+2. ESTÁ ESTRICTAMENTE PROHIBIDO enviar como 'keyConcept' preguntas de continuación o diálogo (como "¿Quieres seguir?", "¿Qué opinas?").
+3. En 'suggestedKeywords', incluye obligatoriamente de 2 a 4 palabras clave o términos técnicos del documento relacionados con este concepto.
+4. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al estudiante.
 
 IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni evalúes su respuesta todavía. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
 
@@ -2909,7 +2917,7 @@ REGLAS DE EVALUACIÓN Y TOMA DE TURNO:
 4. Al evaluar la pregunta 5 (índice 4), haz una síntesis de cierre con su nota global y felicítalo.
 
 DESPLIEGUE DE IDEAS CLAVE:
-Al hacer cada pregunta, llama a 'displayKeyConcept' con la idea principal y las palabras guía en 'suggestedKeywords'.
+Al hacer cada pregunta o evaluar, llama a 'displayKeyConcept' enviando la tesis o concepto clave temático evaluado en 'keyConcept' (máximo 4 a 7 palabras afirmativas, no la pregunta textual) y de 2 a 4 términos del cuaderno en 'suggestedKeywords'.
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
