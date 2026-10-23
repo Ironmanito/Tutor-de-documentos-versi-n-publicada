@@ -934,15 +934,18 @@ export function OralEvaluatorSession({
                   } else if (call.name === 'displayKeyConcept') {
                     const args = call.args as any;
                     if (args && args.keyConcept) {
-                      const conceptText = args.keyConcept;
-                      const cat = args.category || 'Idea Principal';
-                      const suggestedKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
-                      setCurrentKeyConcept({ 
-                        text: conceptText, 
-                        category: cat,
-                        suggestedKeywords: suggestedKws
-                      });
-                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 10));
+                      const raw = String(args.keyConcept || '').trim();
+                      if (raw.length >= 8 && !raw.includes('?') && !raw.includes('¿') && !/<ctrl/i.test(raw) && !/[{}]/.test(raw) && !/^(quieres|te gustaría|te gustaria|qué opinas|que opinas)/i.test(raw)) {
+                        const conceptText = raw.charAt(0).toUpperCase() + raw.slice(1);
+                        const cat = args.category || 'Idea Principal';
+                        const suggestedKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
+                        setCurrentKeyConcept({ 
+                          text: conceptText, 
+                          category: cat,
+                          suggestedKeywords: suggestedKws
+                        });
+                        setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 10));
+                      }
                     }
                     responses.push({
                       id: call.id,

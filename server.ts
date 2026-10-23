@@ -2768,7 +2768,7 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
         const cleanPreviousNotes = (previousNotes && Array.isArray(previousNotes))
           ? previousNotes.filter((n: string) => {
               const s = String(n || '').trim();
-              return s.length >= 8 && !s.includes('?') && !s.includes('¿') && !/^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|el documento que has subido|esta idea se construye)/i.test(s);
+              return s.length >= 8 && !s.includes('?') && !s.includes('¿') && !/^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|el documento que has subido|esta idea se construye|veo que tienes|el documento comienza)/i.test(s) && !/<ctrl\d+>/i.test(s) && !/displayKeyConcept/i.test(s) && !/[{}[\]]/.test(s);
             })
           : [];
 
@@ -2846,8 +2846,9 @@ IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas
 
 Mantén tus respuestas concisas y adecuadas para una conversación hablada en español. Sé proactivo haciendo preguntas si el usuario se queda callado por mucho tiempo sin haber empezado a hablar.
 
-REGLA DE METADATOS:
+REGLA DE METADATOS Y PROHIBICIÓN DE CÓDIGO:
 Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de portada. Concéntrate exclusivamente en el contenido temático sustantivo.
+NUNCA verbalices ni envíes en tu texto hablado la sintaxis de funciones, ni nombres como 'displayKeyConcept', ni llaves {...}, ni etiquetas de control como <ctrl>. Las herramientas son invisibles para la voz y se ejecutan exclusivamente por el canal interno de funciones.
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}
@@ -2945,8 +2946,9 @@ IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas
 
 Mantén tus respuestas concisas y adecuadas para una conversación hablada en español. Sé proactivo haciendo preguntas si el usuario se queda callado por mucho tiempo sin haber empezado a hablar.
 
-REGLA DE METADATOS:
+REGLA DE METADATOS Y PROHIBICIÓN DE CÓDIGO:
 Ignora encabezados como "Dossier de preguntas", nombres de profesores o datos de portada. Concéntrate exclusivamente en el contenido temático sustantivo de la materia.
+NUNCA verbalices ni envíes en tu texto hablado la sintaxis de funciones, ni nombres como 'displayKeyConcept', ni llaves {...}, ni etiquetas de control como <ctrl>. Las herramientas son invisibles para la voz y se ejecutan exclusivamente por el canal interno de funciones.
 
 CUADERNO DE ESTUDIO:
 ${cleanText ? cleanText.substring(0, 50000) : ''}

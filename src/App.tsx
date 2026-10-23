@@ -5676,10 +5676,35 @@ const LIVE_SPEECH_STOPWORDS = new Set([
   "parecer", "subido", "subiste", "cargaste", "construye", "partir"
 ]);
 
+function isCodeOrSystemArtifact(str: string): boolean {
+  if (!str) return true;
+  const s = String(str).trim();
+
+  // Tokens de control de Gemini (ej: ctrl46, ctrl43, etc.)
+  if (/<ctrl\d+>/i.test(s) || /<[^>]+>/.test(s)) return true;
+
+  // Fugas de sintaxis de llamadas a funciones o citas de herramientas
+  if (/(?:citation|clation|action|call|function_call)?:\s*displayKeyConcept/i.test(s)) return true;
+  if (/(?:displayKeyConcept|unlockTopic|submitOralAnswer|functionCall|toolCall)/i.test(s)) return true;
+
+  // Estructuras JSON, llaves u objetos de programación
+  if (/(?:category|keyConcept|suggestedKeywords)\s*:/i.test(s)) return true;
+  if (/\{[^{}]*\}/.test(s) || /\[[^\[\]]*\]/.test(s)) return true;
+  if (/[{}<>\[\]]/.test(s)) return true;
+
+  // Sintaxis de código o scripting
+  if (/(?:=>|::|\(\)|;|var\s|let\s|const\s|function\s)/i.test(s)) return true;
+
+  return false;
+}
+
 function isMetaConversational(str: string): boolean {
   if (!str) return true;
-  const s = str.trim().toLowerCase();
+  const s = String(str).trim().toLowerCase();
   
+  // 0. Si contiene artefactos de código o llamadas a herramientas
+  if (isCodeOrSystemArtifact(str)) return true;
+
   // 1. Signos explícitos de interrogación
   if (s.includes('?') || s.includes('¿')) return true;
 
@@ -5692,10 +5717,14 @@ function isMetaConversational(str: string): boolean {
   // 4. Frases de continuación o gestión de turnos
   if (/(pasamos a|continuamos con|sigamos con|avancemos con|profundicemos|vamos a profundizar|quieres profundizar|te gustaría profundizar|prefieres pasar|o prefieres|quieres que sigamos|quieres que continuemos)/i.test(s)) return true;
 
-  // 5. Meta-referencias al archivo subido, a la app o a la conversación
+  // 5. Saludos, aperturas conversacionales y referencias al documento subido
+  if (/^(hola|buenos días|buenas tardes|bienvenido|bienvenida|un gusto|un placer|me alegro|excelente|perfecto|muy bien)\b/i.test(s)) return true;
+  if (/(veo que tienes un documento|veo que subiste|veo que has subido|veo que hay un documento|veo que en tu documento|veo que aquí|veo que el texto)/i.test(s)) return true;
   if (/(el documento que has subido|el texto que subiste|el archivo que cargaste|en el apunte que subiste|el apunte que subiste|en tu documento|en el documento que|según el documento que subiste|en el texto que subiste)/i.test(s)) return true;
+  if (/(el documento comienza|el texto comienza|el apunte comienza|comienza hablando|comienza con)/i.test(s)) return true;
   if (/(como tutor|en esta sesión|en esta tutoria|en nuestra charla|en este diálogo|en esta conversación)/i.test(s)) return true;
   if (/(esta idea se construye a partir de|a partir de lo que comentas|según lo que me dices|como acabas de mencionar|como decías recién|como me dijiste)/i.test(s)) return true;
+  if (/^(vamos a comenzar|vamos a empezar|empecemos por|comencemos por|para comenzar|para empezar)/i.test(s)) return true;
 
   return false;
 }
@@ -5927,17 +5956,17 @@ function StudySession({
             speechTranscriptBuffer = "";
             return;
           }
-          const endsWithPunct = /[.!?]\s*$/.test(speechTranscriptBuffer);
           const sentences = speechTranscriptBuffer.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
-          const processAll = forceAll || endsWithPunct;
-          const toProcess = processAll ? sentences : sentences.slice(0, -1);
-          speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
+          speechTranscriptBuffer = "";
 
-          for (const rawSent of toProcess) {
+          // Buscar de atrás hacia adelante la última frase sustantiva del documento que NO sea pregunta ni código
+          for (let i = sentences.length - 1; i >= 0; i--) {
+            const rawSent = sentences[i];
             const idea = extractCentralIdeaFromSpeech(rawSent, text, documentKeyTerms);
-            if (idea) {
+            if (idea && !isMetaConversational(idea.text) && !isCodeOrSystemArtifact(idea.text)) {
               setCurrentKeyConcept(idea);
               setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
+              break; // Máximo una nota por turno de voz si no hubo tool call
             }
           }
         };
@@ -6044,11 +6073,16 @@ function StudySession({
               }
             }
 
-            const transcriptChunk = message.serverContent?.outputTranscription?.text;
-            if (transcriptChunk) {
-              speechTranscriptBuffer += transcriptChunk;
-              if (/[.!?]\s*$/.test(speechTranscriptBuffer) || speechTranscriptBuffer.length > 110) {
-                flushSpeechIdeas(false);
+            const rawTranscriptChunk = message.serverContent?.outputTranscription?.text;
+            if (rawTranscriptChunk) {
+              const cleanChunk = rawTranscriptChunk
+                .replace(/<ctrl\d+>/gi, "")
+                .replace(/<[^>]+>/g, "")
+                .replace(/(?:citation|clation|action|call)?:\s*displayKeyConcept\s*\{[^}]*\}/gi, "")
+                .replace(/displayKeyConcept\s*\{[^}]*\}/gi, "")
+                .replace(/\{[^{}]*(?:keyConcept|suggestedKeywords)[^{}]*\}/gi, "");
+              if (cleanChunk) {
+                speechTranscriptBuffer += cleanChunk;
               }
             }
 
@@ -6408,9 +6442,9 @@ function StudySession({
                 </span>
               </div>
 
-              {keyConceptsHistory.length > 0 ? (
+              {keyConceptsHistory.filter(c => !isMetaConversational(c) && !isCodeOrSystemArtifact(c)).length > 0 ? (
                 <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto mb-3 pr-1">
-                  {keyConceptsHistory.map((concept, idx) => (
+                  {keyConceptsHistory.filter(c => !isMetaConversational(c) && !isCodeOrSystemArtifact(c)).map((concept, idx) => (
                     <span
                       key={idx}
                       className="inline-flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-200 font-mono text-[9px] px-2.5 py-1 rounded-md transition-colors"
@@ -6572,17 +6606,17 @@ function FreeStudySession({
             speechTranscriptBuffer = "";
             return;
           }
-          const endsWithPunct = /[.!?]\s*$/.test(speechTranscriptBuffer);
           const sentences = speechTranscriptBuffer.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
-          const processAll = forceAll || endsWithPunct;
-          const toProcess = processAll ? sentences : sentences.slice(0, -1);
-          speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
+          speechTranscriptBuffer = "";
 
-          for (const rawSent of toProcess) {
+          // Buscar de atrás hacia adelante la última frase sustantiva del documento que NO sea pregunta ni código
+          for (let i = sentences.length - 1; i >= 0; i--) {
+            const rawSent = sentences[i];
             const idea = extractCentralIdeaFromSpeech(rawSent, text, documentKeyTerms);
-            if (idea) {
+            if (idea && !isMetaConversational(idea.text) && !isCodeOrSystemArtifact(idea.text)) {
               setCurrentKeyConcept(idea);
               setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
+              break; // Máximo una nota por turno de voz si no hubo tool call
             }
           }
         };
@@ -6679,11 +6713,16 @@ function FreeStudySession({
               }
             }
 
-            const transcriptChunk = message.serverContent?.outputTranscription?.text;
-            if (transcriptChunk) {
-              speechTranscriptBuffer += transcriptChunk;
-              if (/[.!?]\s*$/.test(speechTranscriptBuffer) || speechTranscriptBuffer.length > 110) {
-                flushSpeechIdeas(false);
+            const rawTranscriptChunk = message.serverContent?.outputTranscription?.text;
+            if (rawTranscriptChunk) {
+              const cleanChunk = rawTranscriptChunk
+                .replace(/<ctrl\d+>/gi, "")
+                .replace(/<[^>]+>/g, "")
+                .replace(/(?:citation|clation|action|call)?:\s*displayKeyConcept\s*\{[^}]*\}/gi, "")
+                .replace(/displayKeyConcept\s*\{[^}]*\}/gi, "")
+                .replace(/\{[^{}]*(?:keyConcept|suggestedKeywords)[^{}]*\}/gi, "");
+              if (cleanChunk) {
+                speechTranscriptBuffer += cleanChunk;
               }
             }
 
@@ -6979,9 +7018,9 @@ function FreeStudySession({
                 </span>
               </div>
 
-              {keyConceptsHistory.length > 0 ? (
+              {keyConceptsHistory.filter(c => !isMetaConversational(c) && !isCodeOrSystemArtifact(c)).length > 0 ? (
                 <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto mb-3 pr-1">
-                  {keyConceptsHistory.map((concept, idx) => (
+                  {keyConceptsHistory.filter(c => !isMetaConversational(c) && !isCodeOrSystemArtifact(c)).map((concept, idx) => (
                     <span
                       key={idx}
                       className="inline-flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-200 font-mono text-[9px] px-2.5 py-1 rounded-md transition-colors"
