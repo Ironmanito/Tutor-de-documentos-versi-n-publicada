@@ -2775,24 +2775,24 @@ wss.on('connection', (clientWs: WebSocket, request: any) => {
 
         const displayKeyConceptDeclaration = {
           name: "displayKeyConcept",
-          description: "Muestra en la pantalla del usuario una palabra principal o la idea clave sintetizada en una frase muy corta, y opcionalmente las palabras clave recomendadas que el usuario debería mencionar en su respuesta.",
+          description: "Muestra en la pantalla del usuario una palabra principal o la idea clave académica sintetizada en una frase muy corta afirmativa del documento, y opcionalmente las palabras clave técnicas del texto.",
           parameters: {
             type: Type.OBJECT,
             properties: {
               keyConcept: {
                 type: Type.STRING,
-                description: "La palabra clave o la idea principal resumida en una frase muy corta (máximo 5 a 7 palabras) para ser mostrada en pantalla."
+                description: "La tesis, concepto o definición académica del DOCUMENTO en una frase afirmativa muy corta (máximo 4 a 7 palabras). PROHIBIDO enviar preguntas conversacionales o de continuación como '¿Quieres seguir?' o '¿Qué opinas?'."
               },
               category: {
                 type: Type.STRING,
-                description: "Etiqueta breve opcional (ej: 'Concepto Clave', 'Pregunta Principal', 'Idea Fuerza', 'Palabra Clave', 'Definición')."
+                description: "Etiqueta académica: 'Concepto Clave', 'Tesis Central', 'Definición', o 'Fundamento'."
               },
               suggestedKeywords: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.STRING
                 },
-                description: "Lista de 2 a 5 palabras o términos clave específicos que el estudiante debería intentar mencionar o abordar al responder la pregunta actual."
+                description: "Lista de 2 a 4 palabras clave o términos técnicos del documento relacionados con este concepto."
               }
             },
             required: ["keyConcept"]
@@ -2927,8 +2927,11 @@ Mantén tus intervenciones habladas concisas para mantener un diálogo dinámico
           systemInstruction = `Eres un tutor de estudio experto y amigable. El usuario ha subido un documento y quiere estudiar dialogando contigo.
 Explícale los conceptos, responde sus dudas y hazle preguntas para comprobar su comprensión si lo ves oportuno.
 
-DESPLIEGUE VISUAL DE IDEAS CLAVE EN PANTALLA:
-Siempre que expliques un concepto, des una respuesta o hagas una observación verbal, DEBES invocar la función 'displayKeyConcept' enviando la idea central resumida en una frase corta (3 a 8 palabras), su categoría ('Idea Central', 'Concepto Clave' o 'Pregunta Guía') y 2 a 4 palabras clave en 'suggestedKeywords'. Esto es fundamental para que el usuario vea escritas en pantalla las pequeñas ideas centrales de cada cosa que se habla en tiempo real mientras te escucha. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
+DESPLIEGUE VISUAL DE IDEAS Y NOTAS SUSTANTIVAS DEL DOCUMENTO:
+Siempre que expliques o analices un concepto relevante del documento, DEBES invocar la función 'displayKeyConcept' enviando exclusivamente la TESIS, DEFINICIÓN o IDEA ACADÉMICA sustantiva del documento en una frase afirmativa concisa (3 a 8 palabras), su categoría ('Concepto Clave', 'Tesis Central' o 'Definición') y 2 a 4 palabras clave técnicas del texto en 'suggestedKeywords'.
+REGLA ESTRICTA DE NOTAS:
+Las notas en pantalla y las palabras clave son EXCLUSIVAMENTE para registrar los conceptos y contenidos del DOCUMENTO subido por el estudiante.
+ESTÁ ESTRICTAMENTE PROHIBIDO enviar como 'keyConcept' preguntas conversacionales, preguntas de diálogo o frases de continuación (como "¿Quieres que pasemos al siguiente tema?", "¿Te gustaría profundizar?", "¿Qué opinas de esto?"). Si le haces una pregunta verbal al usuario para mantener el dinamismo, NO la anotes en pantalla; anota únicamente el concepto del apunte que se esté tratando. Inmediatamente después de llamar a 'displayKeyConcept', continúa hablándole en voz alta al usuario.
 
 IMPORTANTE SOBRE EL TIEMPO DE RESPUESTA: Los humanos a veces hacen pausas largas para pensar. Si el usuario se queda callado a mitad de una oración o la idea parece incompleta, NO lo interrumpas ni asumas que ha terminado. Dile algo como "Tómate tu tiempo..." o "¿Quieres añadir algo más?" y espera a que termine de formular su idea.
 

@@ -5661,22 +5661,35 @@ const LIVE_SPEECH_STOPWORDS = new Set([
   "pero", "más", "mas", "sino", "porque", "cuando", "donde", "quien", "cual", "cuales",
   "sobre", "entre", "hacia", "hasta", "desde", "según", "segun", "durante", "mediante",
   "tiene", "tienen", "hacer", "hace", "hacen", "puede", "pueden", "debe", "deben",
-  "vamos", "hablar", "explicar", "decir", "pregunta", "respuesta", "texto", "documento",
+  "vamos", "hablar", "explicar", "decir", "pregunta", "preguntas", "respuesta", "texto", "documento",
   "cuaderno", "importante", "fundamental", "principal", "entonces", "además", "ademas",
   "también", "tambien", "mismo", "misma", "otros", "otras", "algún", "algun", "alguna",
-  "cambio", "definir", "define", "definió", "manera", "forma", "formas", "parte", "partes"
+  "cambio", "definir", "define", "definió", "manera", "forma", "formas", "parte", "partes",
+  "quieres", "gustaría", "gustaria", "opinas", "piensas", "parece", "pasemos", "sigamos",
+  "veamos", "continuar", "profundizar", "profundicemos", "avanzar", "avancemos", "siguiente",
+  "duda", "dudas", "aclarar", "aclaración", "comentar", "ejemplo", "punto", "tema", "temas",
+  "sección", "seccion", "ahora", "después", "despues", "adelante", "claro", "exacto", "bien",
+  "entendido", "entiendes", "recuerda", "fíjate", "fijate", "mira", "escucha", "hola",
+  "tutor", "estudiante", "apunte", "puedes", "podemos", "dime", "cuéntame", "cuentame", "bueno"
 ]);
 
-function extractCentralIdeaFromSpeech(rawSentence: string): { text: string; category: string; suggestedKeywords: string[] } | null {
+function extractCentralIdeaFromSpeech(rawSentence: string, documentText?: string): { text: string; category: string; suggestedKeywords: string[] } | null {
   if (!rawSentence) return null;
   const s = rawSentence.replace(/^text/i, "").replace(/\s+/g, " ").trim();
   if (s.length < 18) return null;
 
+  // 1. REGLA ESTRICTA: Descartar tajantemente cualquier pregunta
+  // Las preguntas son fórmulas conversacionales o pedagógicas del tutor para continuar el diálogo,
+  // NO son las notas sustantivas ni el contenido académico del documento.
+  if (s.includes("?") || s.includes("¿")) {
+    return null;
+  }
+
+  // Descartar saludos o frases breves de cortesía
   if (/^(hola|buenos días|buenas tardes|cómo estás|como estas|tómate tu tiempo|tomate tu tiempo|quieres añadir algo|me escuchas|estoy listo|adelante|perfecto|muy bien\.?$)/i.test(s) && s.length < 48) {
     return null;
   }
 
-  const isQuestion = s.includes("?");
   let cleaned = s.replace(/^[¡!¿?\s.,;:-]+/, "");
   const fillerRegex = /^(hola[!.,\s]*|claro( que sí)?[!.,\s]*|por supuesto[!.,\s]*|exacto[!.,\s]*|exactamente[!.,\s]*|muy bien[!.,\s]*|excelente( punto| respuesta| pregunta)?[!.,\s]*|mira[,:\s]*|fíjate que[,:\s]*|veamos[,:\s]*|bueno[,:\s]*|bien[,:\s]*|te explico[,:\s]*|como vimos[,:\s]*|recuerda que[,:\s]*|en primer lugar[,:\s]*|en segundo lugar[,:\s]*|por otro lado[,:\s]*|además[,:\s]*|entonces[,:\s]*|así que[,:\s]*|es decir[,:\s]*|básicamente[,:\s]*|en resumen[,:\s]*|en cambio[,:\s]*)/i;
   for (let i = 0; i < 4; i++) {
@@ -5684,7 +5697,10 @@ function extractCentralIdeaFromSpeech(rawSentence: string): { text: string; cate
   }
 
   if (cleaned.length < 16) return null;
-  if (/^(qué te parece|quieres que|alguna duda|tienes alguna pregunta|me sigues hasta aquí|de qué tema quieres)/i.test(cleaned)) {
+
+  // 2. Descartar fórmulas conversacionales de turno, continuación o cierre de pregunta
+  const conversationalContinuations = /^(qué te parece|que te parece|quieres que|te gustaría|te gustaria|alguna duda|tienes alguna|me sigues|te queda claro|de qué tema|sobre qué|pasamos a|continuamos|sigamos|avancemos|podemos ver|veamos si|cómo ves|como ves|cuéntame|dime si|estás de acuerdo|estas de acuerdo|quieres añadir|quieres comentar|te parece bien|podrías decirme|podrias decirme|qué opinas|que opinas|qué piensas|que piensas|cuál es tu opinión|dime qué opinas)/i;
+  if (conversationalContinuations.test(cleaned)) {
     return null;
   }
 
@@ -5703,24 +5719,40 @@ function extractCentralIdeaFromSpeech(rawSentence: string): { text: string; cate
   }
 
   idea = idea.charAt(0).toUpperCase() + idea.slice(1);
-  if (isQuestion && !idea.endsWith("?")) idea += "?";
 
   const kwCandidates = cleaned
     .replace(/[.,;!?()"«»""]/g, " ")
     .split(/\s+/)
     .map(w => w.trim())
     .filter(w => w.length >= 5 && !LIVE_SPEECH_STOPWORDS.has(w.toLowerCase()));
+
+  // 3. Validación y anclaje contra el documento académico del usuario:
+  // Si tenemos el texto del documento cargado, verificamos que las palabras clave existan en el texto del apunte
+  let filteredKws = kwCandidates;
+  if (documentText && documentText.length > 50) {
+    const docLower = documentText.toLowerCase();
+    const inDocKws = kwCandidates.filter(w => docLower.includes(w.toLowerCase()));
+    if (inDocKws.length > 0) {
+      filteredKws = inDocKws;
+    } else {
+      // Si la frase expresada no contiene términos sustantivos del documento, se descarta para no ensuciar las notas
+      return null;
+    }
+  }
+
   const uniqueKws: string[] = [];
-  for (const w of kwCandidates) {
+  for (const w of filteredKws) {
     if (!uniqueKws.some(u => u.toLowerCase() === w.toLowerCase())) {
       uniqueKws.push(w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
     }
     if (uniqueKws.length >= 4) break;
   }
 
+  if (uniqueKws.length === 0) return null;
+
   return {
     text: idea,
-    category: isQuestion ? "Pregunta Guía" : "Idea Central",
+    category: "Concepto Clave",
     suggestedKeywords: uniqueKws
   };
 }
@@ -5827,7 +5859,7 @@ function StudySession({
           speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
 
           for (const rawSent of toProcess) {
-            const idea = extractCentralIdeaFromSpeech(rawSent);
+            const idea = extractCentralIdeaFromSpeech(rawSent, text);
             if (idea) {
               setCurrentKeyConcept(idea);
               setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
@@ -5887,20 +5919,32 @@ function StudySession({
                   } else if (call.name === 'displayKeyConcept') {
                     const args = call.args as any;
                     if (args && args.keyConcept) {
-                      const conceptText = args.keyConcept;
-                      const cat = args.category || 'Idea Principal';
-                      const suggestedKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
-                      setCurrentKeyConcept({ 
-                        text: conceptText, 
-                        category: cat,
-                        suggestedKeywords: suggestedKws
-                      });
-                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 15));
+                      const rawConcept = String(args.keyConcept).trim();
+                      const isQuestionOrPrompt = rawConcept.includes('?') || 
+                        rawConcept.includes('¿') ||
+                        /^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|te parece|pasamos|continuamos|sigamos|avancemos|tienes alguna|alguna duda)/i.test(rawConcept);
+
+                      if (!isQuestionOrPrompt && rawConcept.length >= 8) {
+                        const conceptText = rawConcept.charAt(0).toUpperCase() + rawConcept.slice(1);
+                        const cat = (args.category && args.category !== 'Pregunta Guía') ? args.category : 'Concepto Clave';
+                        const rawKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
+                        const filteredKws = rawKws.filter((kw: any) => {
+                          const k = String(kw || '').trim().toLowerCase();
+                          return k.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(k);
+                        });
+
+                        setCurrentKeyConcept({ 
+                          text: conceptText, 
+                          category: cat,
+                          suggestedKeywords: filteredKws
+                        });
+                        setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c.toLowerCase() !== conceptText.toLowerCase())].slice(0, 15));
+                      }
                     }
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Idea principal mostrada en pantalla. Ahora continúa hablándole en voz alta al estudiante de inmediato." }
+                      response: { result: "Idea principal académica registrada en pantalla. Ahora continúa hablándole en voz alta al estudiante de inmediato." }
                     });
                   }
                 }
@@ -6228,7 +6272,7 @@ function StudySession({
                     <div className="flex items-center justify-center gap-1.5 mb-1">
                       <Sparkles className="w-3.5 h-3.5 text-accent-systematic animate-pulse" />
                       <span className="font-mono text-[9px] uppercase tracking-widest font-bold text-accent-systematic">
-                        {currentKeyConcept.category || "Idea Principal / Pregunta"}
+                        {currentKeyConcept.category || "Concepto Clave del Documento"}
                       </span>
                     </div>
                     <p className="text-lg font-black text-white uppercase tracking-tight leading-snug font-display">
@@ -6431,7 +6475,7 @@ function FreeStudySession({
           speechTranscriptBuffer = processAll ? "" : (sentences[sentences.length - 1] || "");
 
           for (const rawSent of toProcess) {
-            const idea = extractCentralIdeaFromSpeech(rawSent);
+            const idea = extractCentralIdeaFromSpeech(rawSent, text);
             if (idea) {
               setCurrentKeyConcept(idea);
               setKeyConceptsHistory(prev => [idea.text, ...prev.filter(c => c.toLowerCase() !== idea.text.toLowerCase())].slice(0, 15));
@@ -6481,20 +6525,32 @@ function FreeStudySession({
                   if (call.name === 'displayKeyConcept') {
                     const args = call.args as any;
                     if (args && args.keyConcept) {
-                      const conceptText = args.keyConcept;
-                      const cat = args.category || 'Idea Principal';
-                      const suggestedKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
-                      setCurrentKeyConcept({ 
-                        text: conceptText, 
-                        category: cat,
-                        suggestedKeywords: suggestedKws
-                      });
-                      setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c !== conceptText)].slice(0, 15));
+                      const rawConcept = String(args.keyConcept).trim();
+                      const isQuestionOrPrompt = rawConcept.includes('?') || 
+                        rawConcept.includes('¿') ||
+                        /^(quieres|te gustaría|te gustaria|qué opinas|que opinas|qué piensas|que piensas|te parece|pasamos|continuamos|sigamos|avancemos|tienes alguna|alguna duda)/i.test(rawConcept);
+
+                      if (!isQuestionOrPrompt && rawConcept.length >= 8) {
+                        const conceptText = rawConcept.charAt(0).toUpperCase() + rawConcept.slice(1);
+                        const cat = (args.category && args.category !== 'Pregunta Guía') ? args.category : 'Concepto Clave';
+                        const rawKws = Array.isArray(args.suggestedKeywords) ? args.suggestedKeywords : [];
+                        const filteredKws = rawKws.filter((kw: any) => {
+                          const k = String(kw || '').trim().toLowerCase();
+                          return k.length >= 4 && !LIVE_SPEECH_STOPWORDS.has(k);
+                        });
+
+                        setCurrentKeyConcept({ 
+                          text: conceptText, 
+                          category: cat,
+                          suggestedKeywords: filteredKws
+                        });
+                        setKeyConceptsHistory(prev => [conceptText, ...prev.filter(c => c.toLowerCase() !== conceptText.toLowerCase())].slice(0, 15));
+                      }
                     }
                     responses.push({
                       id: call.id,
                       name: call.name,
-                      response: { result: "Idea principal mostrada en pantalla. Ahora continúa hablándole en voz alta al estudiante de inmediato." }
+                      response: { result: "Idea principal académica registrada en pantalla. Ahora continúa hablándole en voz alta al estudiante de inmediato." }
                     });
                   }
                 }
@@ -6758,7 +6814,7 @@ function FreeStudySession({
                     <div className="flex items-center justify-center gap-1.5 mb-1">
                       <Sparkles className="w-3.5 h-3.5 text-accent-systematic animate-pulse" />
                       <span className="font-mono text-[9px] uppercase tracking-widest font-bold text-accent-systematic">
-                        {currentKeyConcept.category || "Idea Principal / Pregunta"}
+                        {currentKeyConcept.category || "Concepto Clave del Documento"}
                       </span>
                     </div>
                     <p className="text-xl font-black text-white uppercase tracking-tight leading-snug font-display">
