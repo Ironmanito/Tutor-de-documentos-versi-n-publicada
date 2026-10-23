@@ -15,7 +15,7 @@ import { GoldenRatioWatermark } from './components/GoldenRatioWatermark';
 import { FeedbackModal } from './components/FeedbackModal';
 import { AdminPanel } from './components/AdminPanel';
 import { UploadProgressAnimation, FileProgressItem } from './components/UploadProgressAnimation';
-import { trackUserActivity, trackUserAction, shouldPromptPeriodicFeedback, recordFeedbackPromptShown } from './lib/userTracker';
+import { trackUserActivity, trackUserAction, shouldPromptPeriodicFeedback, recordFeedbackPromptShown, markComponentUsed } from './lib/userTracker';
 import { DocumentViewer } from './components/DocumentViewer';
 import { ConsentModal } from './components/ConsentModal';
 import { InteractiveTourModal } from './components/InteractiveTourModal';
@@ -725,18 +725,70 @@ export default function App() {
     });
   }, [userEmail, userDisplayName, driveUser]);
 
-  // Activación periódica no intrusiva de solicitud de feedback
+  // Registro automático de componentes y herramientas utilizadas para evaluar experiencia
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (shouldPromptPeriodicFeedback()) {
+    if (viewMode === 'free_session') {
+      markComponentUsed('tutor_libre_voz');
+    } else if (viewMode === 'session') {
+      markComponentUsed('tutor_guiado');
+    } else if (viewMode === 'diagram') {
+      markComponentUsed('mapa_conceptual');
+    } else if (viewMode === 'multiple_choice') {
+      markComponentUsed('cuestionario_quiz');
+    } else if (viewMode === 'oral_evaluator_session' || viewMode === 'oral_evaluator_setup') {
+      markComponentUsed('evaluador_oral');
+    }
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (showDocumentViewer) {
+      markComponentUsed('visor_documentos');
+    }
+  }, [showDocumentViewer]);
+
+  // Activación no intrusiva de solicitud de feedback:
+  // Solo se activa en la parte principal (setup o visual), nunca dentro de una herramienta
+  // y solo tras haber interactuado con al menos 3 componentes distintos de la aplicación.
+  useEffect(() => {
+    const checkFeedbackOpportunity = () => {
+      // 1. Debe estar en la parte principal (setup o visual) y sin herramientas/modales activos
+      const isMainView = (viewMode === 'setup' || viewMode === 'visual');
+      const isToolOrModalOpen = 
+        showDocumentViewer || 
+        showAdminPanel || 
+        showApiKeyModal || 
+        showBillingModal || 
+        showConsentModal || 
+        showAuthModal || 
+        showTourModal || 
+        showMobileSidebar || 
+        showMobileInspector ||
+        showFeedbackModal;
+
+      const isInMainView = isMainView && !isToolOrModalOpen;
+
+      if (isInMainView && shouldPromptPeriodicFeedback({ isInMainView: true, minComponentsUsed: 3 })) {
         setShowFeedbackModal(true);
         setFeedbackTriggerSource('periodic');
         recordFeedbackPromptShown();
       }
-    }, 90 * 1000);
+    };
 
+    const interval = setInterval(checkFeedbackOpportunity, 30 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [
+    viewMode,
+    showDocumentViewer,
+    showAdminPanel,
+    showApiKeyModal,
+    showBillingModal,
+    showConsentModal,
+    showAuthModal,
+    showTourModal,
+    showMobileSidebar,
+    showMobileInspector,
+    showFeedbackModal
+  ]);
 
   useEffect(() => {
     const handleApiKeyMissing = () => {
@@ -1174,12 +1226,9 @@ export default function App() {
       activeOralSession: updated
     });
 
-    // Invitar a dejar feedback al finalizar un examen oral
+    // Registrar componente usado al completar un examen oral
     if (updated.isCompleted && !wasCompletedBefore) {
-      setTimeout(() => {
-        setFeedbackTriggerSource('oral_finished');
-        setShowFeedbackModal(true);
-      }, 2000);
+      markComponentUsed('evaluador_oral');
     }
   };
 
@@ -1496,6 +1545,8 @@ export default function App() {
       }
       return;
     }
+
+    markComponentUsed('ingesta_documentos');
 
     // If active study title is empty, automatically use the first uploaded file's title
     if (!activeStudyTitle.trim() && validFiles.length > 0) {
